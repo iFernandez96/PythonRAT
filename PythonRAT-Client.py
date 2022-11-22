@@ -8,7 +8,7 @@ if __name__ == "__main__":
 
     # Start the socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect((socket.gethostname(), 64209))
+    s.connect((socket.gethostname(), PORT))
 
 
     while True:
