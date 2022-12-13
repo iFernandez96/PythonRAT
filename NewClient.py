@@ -6,6 +6,13 @@ HEADERSIZE = 10
 PORT = 64209
 
 def retrieveMessage(s):
+    '''
+    Retrieves a message from the socket stream
+    
+    Parameters: s - The socket stream
+    
+    Returns: The message received from the socket stream
+    '''
     newMessage = True
     fullMessage = ""
     while True:
