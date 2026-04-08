@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# Purpose: RAT Client. This script will speak with the server located on target machine.
+# Purpose: RAT C2. This script will speak with the target machine.
 # Author: Israel Fernandez
 # Date of creation: April 7, 2026
 

