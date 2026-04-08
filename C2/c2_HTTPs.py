@@ -8,6 +8,8 @@
 
 import requests
 import base64
+import shlex
+import subprocess
 
 BASE_URL = "https://localhost:8443"
 
@@ -153,6 +155,16 @@ def execute(command_to_execute, mode):
             err(f"Details of Error: {response["details"]}")
     except TypeError as e:
         err(f"Error: {e}")
+
+
+def execute_locally(payload):
+    try:
+        res = subprocess.run(payload, capture_output=True, text=True, shell=True)
+        print(res.stdout + res.stderr)
+    except OSError as e:
+        err(f"Failed to execute {payload}: {e}")
+
+
 def main():
     try:
         while True:
@@ -161,24 +173,47 @@ def main():
             print("2. Upload a file")
             print("3. Execute a command")
             print("4. Execute continuously")
+            print("5. Execute locally")
             choice = int(input("Please pick a command:"))
             if choice == 1:
-                filename = input("Please enter the path to download: ")
-                local_path = input("Please enter the location you want the file stored.")
-                download(filename, local_path)
+                try:
+                    filename = input("Please enter the path to download: ")
+                    local_path = input("Please enter the location you want the file stored.")
+                    download(filename, local_path)
+                except KeyboardInterrupt:
+                    print()
             elif choice == 2:
-                filename = input("Name a file to upload: ")
-                upload(filename)
+                try:
+                    filename = input("Name a file to upload: ")
+                    upload(filename)
+                except KeyboardInterrupt:
+                    print()
             elif choice == 3:
-                command = input("Enter the command to run: ")
-                execute(command, 0)
+                try:
+                    command = input("Enter the command to run: ")
+                    execute(command, 0)
+                except KeyboardInterrupt:
+                    print()
             elif choice == 4:
-                command = ""
-                print("Enter quit to stop.")
-                while command.lower() != "quit":
-                    command = input(":")
-                    if command.lower() != "quit":
-                        execute(command, 1)
+                try:
+                    command = ""
+                    print("Enter quit to stop.")
+                    while command.lower() != "quit":
+                        command = input(":")
+                        if command.lower() != "quit":
+                            execute(command, 1)
+                except KeyboardInterrupt:
+                    print()
+            elif choice == 5:
+                try:
+                    command = ""
+                    print("Executing locally. Enter quit to stop.")
+                    while command.lower() != "quit":
+                        command = input(":")
+                        if command.lower() != "quit":
+                            execute_locally(command)
+                except KeyboardInterrupt:
+                    print()
             else:
                 print("Please try again")
                 continue
