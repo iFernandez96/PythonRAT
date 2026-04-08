@@ -17,12 +17,6 @@ CA_CERT = "ca.crt"
 # Present the client certificate to the Target.
 CLIENT_CERT = ("c2.crt", "c2.key")
 
-# Command Protocol
-CMD_MSG = b'\x00'
-CMD_EXECUTE = b'\x01'
-CMD_UPLOAD  = b'\x02'
-CMD_DOWNLOAD = b'\x03'
-
 SPLASH = "Welcome to Israel's RAT!"
 
 # This is taken from https://stackoverflow.com/questions/287871/how-do-i-print-colored-text-to-the-terminal

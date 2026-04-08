@@ -13,12 +13,6 @@ import shlex
 
 app = Flask(__name__)
 
-class CMD:
-    MSG      = b'\x00'
-    EXECUTE  = b'\x01'
-    UPLOAD   = b'\x02'
-    DOWNLOAD = b'\x03'
-    SUCCESS  = b'\x04'
 
 # This is taken from https://stackoverflow.com/questions/287871/how-do-i-print-colored-text-to-the-terminal
 class bcolors:
