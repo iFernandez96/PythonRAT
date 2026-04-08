@@ -2,4 +2,5 @@
 CLAUDE.md
 __pycache__/
 rat_venv/
-
+C2/*.key
+Target/*.key
