@@ -1,6 +1,12 @@
 <script>
+  import { onMount } from 'svelte';
   let { implants, selected, onSelect } = $props();
   let search = $state('');
+  let tick   = $state(0);
+  onMount(() => {
+    const id = setInterval(() => tick++, 30_000);
+    return () => clearInterval(id);
+  });
 
   function shortId(id)  { return id?.slice(0, 8) ?? '?'; }
   function platformIcon(os) {
@@ -11,6 +17,7 @@
     return '🐧';
   }
   function timeSince(iso) {
+    tick; // reactive — updates every 30s
     if (!iso) return 'never';
     const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
     if (s < 60)    return `${s}s`;

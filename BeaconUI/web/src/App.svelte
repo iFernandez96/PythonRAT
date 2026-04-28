@@ -71,6 +71,25 @@
     { online: 0, idle: 0, offline: 0 }
   ));
 
+  let sidebarWidth = $state(256);
+  let isResizing   = $state(false);
+
+  function startResize(e) {
+    isResizing = true;
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMove = (e) => {
+      sidebarWidth = Math.max(160, Math.min(420, startW + (e.clientX - startX)));
+    };
+    const onUp = () => {
+      isResizing = false;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+
   let esRef = null;
 
   function startSSE() {
@@ -178,11 +197,18 @@
     </nav>
 
     <!-- ── Body ──────────────────────────────────────────────────────────────── -->
-    <div class="flex flex-1 overflow-hidden">
-      <div class="w-64 shrink-0 border-r border-base-300 overflow-y-auto bg-base-200 flex flex-col">
+    <div class="flex flex-1 overflow-hidden" class:select-none={isResizing} class:cursor-col-resize={isResizing}>
+      <div class="shrink-0 border-r border-base-300 overflow-y-auto bg-base-200 flex flex-col"
+           style="width: {sidebarWidth}px">
         <ImplantList {implants} {selected} onSelect={selectImplant} />
       </div>
-      <div class="flex flex-col flex-1 overflow-hidden">
+      <!-- Resize handle -->
+      <div class="w-1 shrink-0 bg-base-300 hover:bg-primary/35 transition-colors cursor-col-resize
+                  {isResizing ? 'bg-primary/50' : ''}"
+           onmousedown={startResize}
+           role="separator" aria-orientation="vertical">
+      </div>
+      <div class="flex flex-col flex-1 overflow-hidden min-w-0">
         {#if selected}
           <div class="flex flex-col flex-1 overflow-hidden">
             <div class="shrink-0 border-b border-base-300 bg-base-100">

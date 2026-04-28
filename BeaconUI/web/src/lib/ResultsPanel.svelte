@@ -9,6 +9,19 @@
   let histLoaded    = $state(false);
   let collapsed     = $state(new Set());
 
+  // Auto-expand newest result when new results arrive
+  let prevResultCount = $state(0);
+  $effect(() => {
+    const total = results.length;
+    if (total > prevResultCount && results.length > 0) {
+      const key = resultKey(results[0]);
+      const s = new Set(collapsed);
+      s.delete(key);
+      collapsed = s;
+    }
+    prevResultCount = total;
+  });
+
   // Derive unique types from results for filter dropdown
   const allTypes = $derived([...new Set(results.map(r => r.type))].sort());
 
@@ -133,7 +146,11 @@
   // ── Formatters ────────────────────────────────────────────────────────────
   function fmtTime(iso) {
     if (!iso) return '';
-    return new Date(iso).toLocaleTimeString();
+    const d = new Date(iso);
+    const s = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (s < 60)   return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    return d.toLocaleTimeString();
   }
 
   const typeColor = {
