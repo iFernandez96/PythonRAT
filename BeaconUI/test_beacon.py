@@ -633,9 +633,11 @@ class TestNewC2Endpoints(unittest.TestCase):
             self.skipTest("No test implant registered — run TestRegistration first")
 
     def _operator_client(self):
-        from flask.testing import FlaskClient
         c2_beacon.operator_app.config["TESTING"] = True
-        return c2_beacon.operator_app.test_client()
+        client = c2_beacon.operator_app.test_client()
+        with client.session_transaction() as sess:
+            sess["authed"] = True
+        return client
 
     def test_results_history_endpoint(self):
         client = self._operator_client()
@@ -721,7 +723,10 @@ class TestAuditEndpoints(unittest.TestCase):
 
     def _client(self):
         c2_beacon.operator_app.config["TESTING"] = True
-        return c2_beacon.operator_app.test_client()
+        client = c2_beacon.operator_app.test_client()
+        with client.session_transaction() as sess:
+            sess["authed"] = True
+        return client
 
     def test_global_audit_returns_list(self):
         client = self._client()
@@ -772,7 +777,10 @@ class TestResultsEndpoint(unittest.TestCase):
 
     def _client(self):
         c2_beacon.operator_app.config["TESTING"] = True
-        return c2_beacon.operator_app.test_client()
+        client = c2_beacon.operator_app.test_client()
+        with client.session_transaction() as sess:
+            sess["authed"] = True
+        return client
 
     def test_results_clears_on_read(self):
         """GET /api/results/<id> should return pending results and then clear them."""
@@ -824,7 +832,10 @@ class TestQueueTaskAPI(unittest.TestCase):
 
     def _client(self):
         c2_beacon.operator_app.config["TESTING"] = True
-        return c2_beacon.operator_app.test_client()
+        client = c2_beacon.operator_app.test_client()
+        with client.session_transaction() as sess:
+            sess["authed"] = True
+        return client
 
     def test_queue_unknown_implant(self):
         client = self._client()
@@ -884,7 +895,10 @@ class TestPatchImplantEdgeCases(unittest.TestCase):
 
     def _client(self):
         c2_beacon.operator_app.config["TESTING"] = True
-        return c2_beacon.operator_app.test_client()
+        client = c2_beacon.operator_app.test_client()
+        with client.session_transaction() as sess:
+            sess["authed"] = True
+        return client
 
     def test_patch_unknown_implant(self):
         client = self._client()
@@ -993,6 +1007,145 @@ class TestHandlerEdgeCases(unittest.TestCase):
         r = implant_beacon.handle_kill_process({"pid": 9999999, "signal": 0})
         self.assertFalse(r["ok"])
         self.assertIn("error", r)
+
+
+# ── Windows code-path unit tests ──────────────────────────────────────────────
+
+class TestWindowsImplantUnit(unittest.TestCase):
+    """Unit tests for Windows-specific handler paths.
+
+    platform.system() is mocked to 'Windows' so these run on Linux/macOS.
+    winreg (Windows-only module) is injected via patch.dict(sys.modules).
+    """
+
+    def test_execute_uses_shell_true(self):
+        """Windows execute must pass shell=True to subprocess.run."""
+        fake = MagicMock(returncode=0, stdout="win_out", stderr="")
+        with patch.object(implant_beacon.platform, "system", return_value="Windows"):
+            with patch.object(implant_beacon.subprocess, "run",
+                              return_value=fake) as mock_run:
+                r = implant_beacon.handle_execute({"command": "echo hello"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["output"], "win_out")
+        kw = mock_run.call_args[1]
+        self.assertTrue(kw.get("shell"), "Windows execute must use shell=True")
+
+    def test_clipboard_uses_powershell(self):
+        """Windows clipboard must call PowerShell Get-Clipboard."""
+        fake = MagicMock(returncode=0, stdout="clipboard text", stderr="")
+        with patch.object(implant_beacon.platform, "system", return_value="Windows"):
+            with patch.object(implant_beacon.subprocess, "run",
+                              return_value=fake) as mock_run:
+                r = implant_beacon.handle_clipboard({})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["output"], "clipboard text")
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("powershell", cmd[0].lower())
+        self.assertIn("Get-Clipboard", " ".join(cmd))
+
+    def test_sysinfo_windows_memory_and_uptime(self):
+        """Windows sysinfo extracts Memory (MB) and Uptime from wmic output."""
+        wmic_mem  = "TotalVisibleMemorySize=8388608\r\n\r\n"
+        wmic_boot = "LastBootUpTime=20260101120000.000000+000\r\n\r\n"
+        side_effects = [
+            MagicMock(returncode=0, stdout=wmic_mem,  stderr=""),
+            MagicMock(returncode=0, stdout=wmic_boot, stderr=""),
+        ]
+        with patch.object(implant_beacon.platform, "system", return_value="Windows"):
+            with patch.object(implant_beacon.subprocess, "run",
+                              side_effect=side_effects):
+                r = implant_beacon.handle_sysinfo({})
+        self.assertTrue(r["ok"])
+        out = r["output"]
+        self.assertIn("Memory:", out)
+        self.assertIn("MB",      out)
+        self.assertIn("Uptime:", out)
+
+    def test_privesc_enum_windows_all_sections(self):
+        """Windows privesc_enum must include all 6 section headers."""
+        fake = MagicMock(returncode=0, stdout="mocked", stderr="")
+        with patch.object(implant_beacon.platform, "system", return_value="Windows"):
+            with patch.object(implant_beacon.subprocess, "run", return_value=fake):
+                r = implant_beacon.handle_privesc_enum({})
+        self.assertTrue(r["ok"])
+        for hdr in ("[ID]", "[SUDO]", "[SUID]",
+                    "[WRITABLE /etc]", "[CAPABILITIES]", "[ENVIRONMENT]"):
+            self.assertIn(hdr, r["output"], f"Windows privesc missing section: {hdr}")
+
+    def test_persist_windows_registry(self):
+        """Windows persist=registry installs a Run key via winreg."""
+        mock_winreg = MagicMock()
+        mock_winreg.HKEY_CURRENT_USER    = 0x80000001
+        mock_winreg.KEY_READ             = 0x20019
+        mock_winreg.KEY_WRITE            = 0x20006
+        mock_winreg.REG_SZ               = 1
+        mock_key = MagicMock()
+        mock_key.__enter__ = MagicMock(return_value=mock_key)
+        mock_key.__exit__  = MagicMock(return_value=False)
+        mock_winreg.OpenKey.return_value     = mock_key
+        mock_winreg.QueryValueEx.side_effect = FileNotFoundError
+
+        with patch.object(implant_beacon.platform, "system", return_value="Windows"):
+            with patch.dict(sys.modules, {"winreg": mock_winreg}):
+                r = implant_beacon.handle_persist({"method": "registry"})
+
+        self.assertTrue(r["ok"])
+        self.assertIn("registry", r["output"].lower())
+        mock_winreg.SetValueEx.assert_called_once()
+
+    def test_unpersist_windows_no_persistence(self):
+        """Windows unpersist with nothing installed returns ok=True."""
+        mock_winreg = MagicMock()
+        mock_winreg.HKEY_CURRENT_USER    = 0x80000001
+        mock_winreg.KEY_READ             = 0x20019
+        mock_winreg.KEY_WRITE            = 0x20006
+        mock_key = MagicMock()
+        mock_key.__enter__ = MagicMock(return_value=mock_key)
+        mock_key.__exit__  = MagicMock(return_value=False)
+        mock_winreg.OpenKey.return_value    = mock_key
+        mock_winreg.DeleteValue.side_effect = FileNotFoundError
+
+        with patch.object(implant_beacon.platform, "system", return_value="Windows"):
+            with patch.dict(sys.modules, {"winreg": mock_winreg}):
+                r = implant_beacon.handle_unpersist({})
+
+        self.assertTrue(r["ok"])
+        self.assertIn("No Windows persistence", r["output"])
+
+    def test_self_update_windows_uses_popen_not_execv(self):
+        """Windows self_update spawns a detached Popen instead of os.execv."""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".py", mode="w") as f:
+            f.write("# placeholder")
+            tmp_path = f.name
+        self.addCleanup(lambda: os.unlink(tmp_path) if os.path.exists(tmp_path) else None)
+
+        popen_called = threading.Event()
+        exit_called  = threading.Event()
+
+        p_popen = patch.object(implant_beacon.subprocess, "Popen",
+                               side_effect=lambda *a, **kw: popen_called.set() or MagicMock())
+        p_exit  = patch.object(implant_beacon.sys, "exit",
+                               side_effect=lambda *a: exit_called.set())
+        p_sleep = patch.object(implant_beacon.time, "sleep", return_value=None)
+        p_plat  = patch.object(implant_beacon.platform, "system", return_value="Windows")
+
+        p_popen.start(); self.addCleanup(p_popen.stop)
+        p_exit.start();  self.addCleanup(p_exit.stop)
+        p_sleep.start(); self.addCleanup(p_sleep.stop)
+        p_plat.start();  self.addCleanup(p_plat.stop)
+
+        orig_file = implant_beacon.__file__
+        implant_beacon.__file__ = tmp_path
+        try:
+            r = implant_beacon.handle_self_update(
+                {"payload": base64.b64encode(b"# updated").decode()}
+            )
+        finally:
+            implant_beacon.__file__ = orig_file
+
+        self.assertTrue(r["ok"])
+        self.assertTrue(popen_called.wait(timeout=3),
+                        "subprocess.Popen was not called by Windows self_update")
 
 
 # ── C implant integration tests ───────────────────────────────────────────────
@@ -1186,6 +1339,8 @@ class TestCImplant(unittest.TestCase):
         """The C implant should appear in /api/implants with correct fields."""
         c2_beacon.operator_app.config["TESTING"] = True
         client = c2_beacon.operator_app.test_client()
+        with client.session_transaction() as sess:
+            sess["authed"] = True
         resp   = client.get("/api/implants")
         self.assertEqual(resp.status_code, 200)
         listing = resp.get_json()
@@ -1484,10 +1639,16 @@ class TestEncryptedTasking(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertIn("plain_ok", r["output"])
 
-    def test_config_endpoint(self):
-        """GET /api/config returns encryption state."""
+    def _authed_client(self):
         c2_beacon.operator_app.config["TESTING"] = True
         client = c2_beacon.operator_app.test_client()
+        with client.session_transaction() as sess:
+            sess["authed"] = True
+        return client
+
+    def test_config_endpoint(self):
+        """GET /api/config returns encryption state."""
+        client = self._authed_client()
         resp = client.get("/api/config")
         self.assertEqual(resp.status_code, 200)
         cfg = resp.get_json()
@@ -1498,7 +1659,7 @@ class TestEncryptedTasking(unittest.TestCase):
         """POST /api/config/encrypt toggles ENCRYPT_TASKS."""
         if not c2_beacon._HAVE_CRYPTO:
             self.skipTest("cryptography not installed")
-        client = c2_beacon.operator_app.test_client()
+        client = self._authed_client()
         resp = client.post("/api/config/encrypt",
                            json={"enabled": True},
                            content_type="application/json")
@@ -1517,6 +1678,7 @@ class TestPayloadStaging(unittest.TestCase):
     """Verify stager endpoints return usable scripts that reference the C2 URL."""
 
     def _client(self):
+        # Stager endpoints are public — no auth needed, but we still get a client normally
         c2_beacon.operator_app.config["TESTING"] = True
         return c2_beacon.operator_app.test_client()
 
@@ -1567,9 +1729,39 @@ class TestMultiOperatorAuth(unittest.TestCase):
         return c2_beacon.operator_app.test_client()
 
     def test_no_auth_when_empty_keys(self):
-        """Without any keys configured, all requests pass through."""
+        """Without API keys configured, login (session auth) is required."""
         resp = self._client().get("/api/implants")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_session_login_grants_access(self):
+        """Valid login sets a session cookie that grants access to all API routes."""
+        client = self._client()
+        resp = client.post("/login",
+                           json={"username": "admin", "password": "admin"},
+                           content_type="application/json")
         self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["ok"])
+        # Now API routes are accessible
+        resp2 = client.get("/api/implants")
+        self.assertEqual(resp2.status_code, 200)
+
+    def test_session_logout_revokes_access(self):
+        """Logging out removes session auth."""
+        client = self._client()
+        client.post("/login", json={"username": "admin", "password": "admin"},
+                    content_type="application/json")
+        client.post("/logout")
+        resp = client.get("/api/implants")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_invalid_login(self):
+        """Wrong password returns 401."""
+        client = self._client()
+        resp = client.post("/login",
+                           json={"username": "admin", "password": "wrong"},
+                           content_type="application/json")
+        self.assertEqual(resp.status_code, 401)
+        self.assertFalse(resp.get_json()["ok"])
 
     def test_rejects_without_key(self):
         c2_beacon.OPERATOR_API_KEYS = ["secret-key-abc"]
@@ -1667,6 +1859,7 @@ if __name__ == "__main__":
         TestQueueTaskAPI,
         TestPatchImplantEdgeCases,
         TestHandlerEdgeCases,
+        TestWindowsImplantUnit,
         TestInteractiveShell,
         TestSocksProxy,
         TestEncryptedTasking,

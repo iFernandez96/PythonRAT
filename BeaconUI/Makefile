@@ -29,7 +29,19 @@ TEST_PORT   := 9446
 TEST_CFLAGS := -DC2_URL_0='"https://localhost:$(TEST_PORT)"' \
                -DDEFAULT_INTERVAL=1 -DJITTER_FACTOR=0.0
 
-.PHONY: all debug test_build clean run
+# Windows cross-compile (requires: sudo apt install mingw-w64)
+WINDOWS_TARGET := implant_beacon.exe
+MINGW_CC       := x86_64-w64-mingw32-gcc
+WINDOWS_CFLAGS := -Wall -O2 \
+                  -DC2_URL_0='"https://localhost:9443"' \
+                  -DDEFAULT_INTERVAL=20 -DJITTER_FACTOR=0.2 \
+                  -DPLATFORM_NAME='"Windows"'
+WINDOWS_LDFLAGS := -lcurl -lssl -lcrypto -lws2_32 -lwinhttp -lncrypt -lcrypt32 -lpthread
+
+# Docker image name for Windows tests
+DOCKER_WINTEST := c2-wintest
+
+.PHONY: all debug test_build windows_build windows_test docker_windows_test clean run
 
 all: $(TARGET)
 
@@ -48,8 +60,22 @@ debug: $(SRC)
 	      $(shell pkg-config --libs $(PKGS)) -lpthread -lm
 	@echo "[+] Built: $(TARGET)_debug (ASAN+UBSAN)"
 
+windows_build: $(SRC)
+	@command -v $(MINGW_CC) >/dev/null 2>&1 || \
+		{ echo "[!] Install mingw-w64: sudo apt install mingw-w64"; exit 1; }
+	$(MINGW_CC) $(WINDOWS_CFLAGS) -o $(WINDOWS_TARGET) $< $(WINDOWS_LDFLAGS)
+	@echo "[+] Built: $(WINDOWS_TARGET)"
+
+# Build a Docker image with mingw + Wine and run the Windows tests inside it
+# No local mingw/Wine install needed — Docker handles everything.
+docker_windows_test:
+	@echo "[*] Building Windows test Docker image (first run: ~5-10 min to install Wine)"
+	docker build -f docker/Dockerfile.windows-test -t $(DOCKER_WINTEST) .
+	@echo "[*] Running Windows implant tests in Docker..."
+	docker run --rm $(DOCKER_WINTEST)
+
 clean:
-	rm -f $(TARGET) $(TARGET)_debug $(TARGET)_test
+	rm -f $(TARGET) $(TARGET)_debug $(TARGET)_test $(WINDOWS_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)

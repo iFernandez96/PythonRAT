@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "c2": {
+      "command": "/home/israel/Documents/Development/CyberSecurity/projects/RAT/rat_venv/bin/python3",
+      "args": [
+        "/home/israel/Documents/Development/CyberSecurity/projects/RAT/BeaconUI/mcp_c2_server.py"
+      ],
+      "env": {
+        "C2_URL": "https://localhost:9444"
+      }
+    }
+  }
+}

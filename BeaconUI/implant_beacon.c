@@ -301,7 +301,11 @@ static char *res_ok(int tid, const char *type, const char *output) {
     char *et = json_esc(type);
     char *eo = json_esc(output ? output : "");
     str_t j; str_init(&j);
-    str_fmt(&j, "{\"task_id\":%d,\"type\":\"%s\",\"ok\":true,\"output\":\"%s\"}", tid, et, eo);
+    /* Use str_cat for output — str_fmt has an 8192-byte buffer and would
+       silently truncate large outputs (netstat, privesc_enum, ps, etc.) */
+    str_fmt(&j, "{\"task_id\":%d,\"type\":\"%s\",\"ok\":true,\"output\":\"", tid, et);
+    str_cat(&j, eo);
+    str_cat(&j, "\"}");
     free(et); free(eo);
     return j.d;
 }
@@ -310,7 +314,9 @@ static char *res_err(int tid, const char *type, const char *error) {
     char *et = json_esc(type);
     char *ee = json_esc(error ? error : "error");
     str_t j; str_init(&j);
-    str_fmt(&j, "{\"task_id\":%d,\"type\":\"%s\",\"ok\":false,\"error\":\"%s\"}", tid, et, ee);
+    str_fmt(&j, "{\"task_id\":%d,\"type\":\"%s\",\"ok\":false,\"error\":\"", tid, et);
+    str_cat(&j, ee);
+    str_cat(&j, "\"}");
     free(et); free(ee);
     return j.d;
 }

