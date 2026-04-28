@@ -131,7 +131,21 @@
       await refreshImplants();
       startSSE();
     }
-    return () => { if (esRef) esRef.close(); };
+    function onKey(e) {
+      if (!authed) return;
+      if (e.key === 'Escape' && selected) {
+        const tag = document.activeElement?.tagName?.toLowerCase();
+        if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') {
+          selected = null;
+        }
+      }
+      if (e.altKey && e.key === 'a') {
+        e.preventDefault();
+        showAudit = !showAudit;
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => { if (esRef) esRef.close(); window.removeEventListener('keydown', onKey); };
   });
 
   async function onLogin() {
@@ -181,7 +195,7 @@
         <div class="divider divider-horizontal mx-0 h-4"></div>
         <span class="text-base-content/30">{implants.length} implant{implants.length !== 1 ? 's' : ''}</span>
         <div class="divider divider-horizontal mx-0 h-4"></div>
-        <button class="btn btn-ghost btn-xs" onclick={() => showAudit = true}>Audit Log</button>
+        <button class="btn btn-ghost btn-xs" onclick={() => showAudit = true}>Audit Log <kbd class="kbd kbd-xs hidden lg:inline">alt+a</kbd></button>
         <button class="btn btn-ghost btn-xs" onclick={refreshImplants} title="Refresh">↺</button>
         <div class="divider divider-horizontal mx-0 h-4"></div>
         <div class="dropdown dropdown-end">

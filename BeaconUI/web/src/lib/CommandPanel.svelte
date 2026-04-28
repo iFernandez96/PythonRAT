@@ -1,5 +1,5 @@
 <script>
-  import { tick } from 'svelte';
+  import { tick, onMount } from 'svelte';
   import TaskQueue from './TaskQueue.svelte';
 
   let { implant, onTaskQueued } = $props();
@@ -234,6 +234,24 @@
     sendTask({ type: 'self_destruct' });
     destructConfirm = false;
   }
+
+  onMount(() => {
+    const catIds = ['shell', 'files', 'capture', 'recon', 'control'];
+    function onKey(e) {
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        const n = parseInt(e.key, 10);
+        if (n >= 1 && n <= 5) {
+          const tag = document.activeElement?.tagName?.toLowerCase();
+          if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') {
+            e.preventDefault();
+            switchCategory(catIds[n - 1]);
+          }
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 </script>
 
 <div class="flex flex-col">
@@ -266,6 +284,9 @@
         {cat.label}
       </button>
     {/each}
+    <span class="text-base-content/12 text-xs font-mono ml-1 hidden lg:inline select-none" title="Alt+1–5 to switch">
+      alt+1–5
+    </span>
   </div>
 
   <!-- Sub-tab bar (Level 2) -->

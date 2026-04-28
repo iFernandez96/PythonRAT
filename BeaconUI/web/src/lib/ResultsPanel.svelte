@@ -180,6 +180,31 @@
   };
   function typeAccent(t) { return typeAccentMap[t] ?? '#c9d1d9'; }
 
+  // ── Sysinfo parser ────────────────────────────────────────────────────────
+  function parseSysinfo(output) {
+    return output.trim().split('\n')
+      .map(ln => { const i = ln.indexOf(':'); return i > -1 ? [ln.slice(0,i).trim(), ln.slice(i+1).trim()] : null; })
+      .filter(Boolean);
+  }
+
+  // ── Privesc section parser ────────────────────────────────────────────────
+  function parsePrivesc(output) {
+    const sectionRe = /^\[(.+?)\]/;
+    const sections = [];
+    let current = null;
+    for (const line of output.split('\n')) {
+      const m = sectionRe.exec(line.trim());
+      if (m) {
+        if (current) sections.push(current);
+        current = { header: line.trim(), lines: [], hasContent: false };
+      } else if (current) {
+        if (line.trim()) { current.lines.push(line); current.hasContent = true; }
+      }
+    }
+    if (current) sections.push(current);
+    return sections;
+  }
+
   // ── Process table parser ──────────────────────────────────────────────────
   function parsePsText(output) {
     if (!output) return null;
@@ -458,6 +483,34 @@
                     <pre class="text-xs font-mono whitespace-pre-wrap break-words text-base-content/80
                                 max-h-72 overflow-y-auto">{r.output}</pre>
                   {/if}
+
+                {:else if r.type === 'sysinfo' && r.output}
+                  <!-- Sysinfo structured display -->
+                  <div class="grid grid-cols-2 gap-1.5 font-mono text-xs">
+                    {#each parseSysinfo(r.output) as [k, v]}
+                      <div class="flex flex-col gap-0.5 rounded bg-base-200 px-2 py-1.5">
+                        <span class="text-base-content/35 text-xs uppercase tracking-wide">{k}</span>
+                        <span class="text-base-content/85 truncate" title={v}>{v}</span>
+                      </div>
+                    {/each}
+                  </div>
+
+                {:else if r.type === 'privesc_enum' && r.output}
+                  <!-- Privesc collapsible sections -->
+                  {@const sections = parsePrivesc(r.output)}
+                  <div class="flex flex-col gap-1.5">
+                    {#each sections as sec}
+                      <details class="group rounded bg-base-200 border border-base-content/8 overflow-hidden" open={sec.hasContent}>
+                        <summary class="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer text-xs font-mono font-semibold
+                                        text-warning/80 hover:text-warning select-none list-none">
+                          <span class="flex-1">{sec.header}</span>
+                          <span class="text-base-content/25 text-xs">{sec.lines.length} line{sec.lines.length !== 1 ? 's' : ''}</span>
+                        </summary>
+                        <pre class="text-xs font-mono whitespace-pre-wrap break-words text-base-content/70 px-2.5 py-2
+                                    max-h-40 overflow-y-auto border-t border-base-content/8">{sec.lines.join('\n')}</pre>
+                      </details>
+                    {/each}
+                  </div>
 
                 {:else if r.output !== undefined && r.output !== null}
                   <!-- Generic text output -->

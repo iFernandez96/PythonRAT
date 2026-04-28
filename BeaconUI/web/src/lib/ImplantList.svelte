@@ -91,6 +91,17 @@
                      : 'hover:bg-base-300/60 border border-transparent hover:border-base-content/8'}"
             style={isSelected ? 'box-shadow: inset 3px 0 0 #00e5b0, 0 0 16px rgba(0,229,176,0.06)' : ''}
             onclick={() => onSelect(implant)}
+            data-implant-btn
+            onkeydown={(e) => {
+              if (e.key === 'Enter') { onSelect(implant); return; }
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                const buttons = [...document.querySelectorAll('[data-implant-btn]')];
+                const idx = buttons.indexOf(e.currentTarget);
+                const next = buttons[e.key === 'ArrowDown' ? idx + 1 : idx - 1];
+                next?.focus();
+              }
+            }}
           >
             <div class="flex items-center gap-1.5 min-w-0">
               <span class="text-sm leading-none select-none shrink-0">{platformIcon(implant.os)}</span>

